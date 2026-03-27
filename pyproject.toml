@@ -1,0 +1,34 @@
+[build-system]
+requires = ["hatchling>=1.25.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "msgraph-mcp"
+version = "0.1.0"
+description = "Microsoft Graph MCP server for Outlook mail and calendar"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [
+  { name = "Porygon Bot" }
+]
+dependencies = [
+  "fastmcp>=2.8.0",
+  "httpx>=0.28.1",
+  "msal>=1.32.3",
+  "pydantic>=2.11.0",
+  "python-dotenv>=1.1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+]
+
+[project.scripts]
+msgraph-mcp = "msgraph_mcp.server:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/msgraph_mcp"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
