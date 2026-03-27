@@ -47,8 +47,17 @@ Recommended settings:
 2. Fill in:
    - `MICROSOFT_CLIENT_ID`
    - `MICROSOFT_TENANT_ID`
-3. Install dependencies
-4. Run the MCP server
+3. Install and run:
+
+```bash
+# With uv (recommended)
+uv sync
+uv run msgraph-mcp
+
+# With pip
+pip install -e .
+msgraph-mcp
+```
 
 Suggested tenant values:
 - `organizations` for work/school accounts only
@@ -63,14 +72,23 @@ Suggested tenant values:
 - Path parameters and search queries are validated/sanitized before use.
 - See `SECURITY_REVIEW.md` for security notes.
 
+## Development
+
+```bash
+# With uv
+uv sync --dev
+uv run pytest
+
+# With pip
+pip install -e '.[dev]'
+pytest
+```
+
 ## Smoke test harness
 
 A lightweight local harness is included for first-run validation without full MCP client wiring.
 
-Install dependencies first, then run examples like:
-
 ```bash
-pip install -e .
 
 # Auth
 python3 scripts/smoke_test.py status
