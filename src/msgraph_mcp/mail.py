@@ -447,10 +447,10 @@ def bulk_manage_messages_multi_pass(
             for item in matches
             if item.id not in seen_ids
         ]
-        for item in preview:
-            seen_ids.add(item["id"])
 
         if dry_run:
+            for item in preview:
+                seen_ids.add(item["id"])
             aggregate_matches.extend(preview)
         else:
             for item in matches:

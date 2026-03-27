@@ -9,7 +9,7 @@ description = "Microsoft Graph MCP server for Outlook mail and calendar"
 readme = "README.md"
 requires-python = ">=3.11"
 authors = [
-  { name = "Porygon Bot" }
+  { name = "jspv" }
 ]
 dependencies = [
   "fastmcp>=2.8.0",
@@ -20,6 +20,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+]
+
+[dependency-groups]
 dev = [
   "pytest>=8.0",
 ]
