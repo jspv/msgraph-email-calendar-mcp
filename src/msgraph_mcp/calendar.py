@@ -9,6 +9,8 @@ from .models import (
     CalendarEventDetail,
     CalendarEventSummary,
     CalendarSummary,
+    MeetingTimeSuggestion,
+    ScheduleEntry,
     _address_label,
     _clean_text_snippet,
     _event_time_label,
@@ -320,3 +322,69 @@ def get_event(account_id: str | None, event_id: str) -> CalendarEventDetail:
         is_online_meeting=bool(item.get("isOnlineMeeting", False)),
         summary=summary,
     )
+
+
+def find_meeting_times(
+    account_id: str | None = None,
+    *,
+    attendees: list[str],
+    duration_minutes: int = 60,
+    start_iso: str | None = None,
+    end_iso: str | None = None,
+) -> list[MeetingTimeSuggestion]:
+    """Suggest available meeting times for a set of attendees."""
+    client = GraphClient(account_id)
+    body: dict = {
+        "attendees": [
+            {"emailAddress": {"address": email}, "type": "required"}
+            for email in attendees
+        ],
+        "meetingDuration": f"PT{duration_minutes}M",
+    }
+    if start_iso and end_iso:
+        body["timeConstraint"] = {
+            "timeslots": [
+                {
+                    "start": {"dateTime": start_iso, "timeZone": "UTC"},
+                    "end": {"dateTime": end_iso, "timeZone": "UTC"},
+                }
+            ]
+        }
+    result = client.request("POST", "/me/findMeetingTimes", json_body=body) or {}
+    suggestions = result.get("meetingTimeSuggestions") or []
+    return [
+        MeetingTimeSuggestion(
+            start=(s.get("meetingTimeSlot") or {}).get("start", {}).get("dateTime"),
+            end=(s.get("meetingTimeSlot") or {}).get("end", {}).get("dateTime"),
+            confidence=s.get("confidence"),
+            organizer_availability=s.get("organizerAvailability"),
+            attendee_availability=s.get("attendeeAvailability") or [],
+        )
+        for s in suggestions
+    ]
+
+
+def get_schedule(
+    account_id: str | None = None,
+    *,
+    emails: list[str],
+    start_iso: str,
+    end_iso: str,
+) -> list[ScheduleEntry]:
+    """Get free/busy information for one or more users."""
+    client = GraphClient(account_id)
+    body = {
+        "schedules": emails,
+        "startTime": {"dateTime": start_iso, "timeZone": "UTC"},
+        "endTime": {"dateTime": end_iso, "timeZone": "UTC"},
+    }
+    result = client.request("POST", "/me/calendar/getSchedule", json_body=body) or {}
+    items = result.get("value") or []
+    return [
+        ScheduleEntry(
+            email=item.get("scheduleId", ""),
+            availability_view=item.get("availabilityView"),
+            schedule_items=item.get("scheduleItems") or [],
+        )
+        for item in items
+    ]

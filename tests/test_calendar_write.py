@@ -184,3 +184,62 @@ class TestRespondToEvent:
         import pytest
         with pytest.raises(ValueError, match="response"):
             respond_to_event(account_id=None, event_id="event-1", response="maybe")
+
+
+from msgraph_mcp.calendar import find_meeting_times, get_schedule
+
+
+class TestFindMeetingTimes:
+    @patch("msgraph_mcp.calendar.GraphClient")
+    def test_basic_request(self, MockClient):
+        client = MockClient.return_value
+        client.request.return_value = {
+            "meetingTimeSuggestions": [
+                {
+                    "meetingTimeSlot": {
+                        "start": {"dateTime": "2026-04-01T09:00:00", "timeZone": "UTC"},
+                        "end": {"dateTime": "2026-04-01T10:00:00", "timeZone": "UTC"},
+                    },
+                    "confidence": 100.0,
+                    "organizerAvailability": "free",
+                    "attendeeAvailability": [],
+                }
+            ],
+        }
+        result = find_meeting_times(
+            account_id=None,
+            attendees=["alice@example.com"],
+            duration_minutes=60,
+        )
+        assert len(result) == 1
+        assert result[0].confidence == 100.0
+        call_args = client.request.call_args
+        assert call_args[0] == ("POST", "/me/findMeetingTimes")
+
+
+class TestGetSchedule:
+    @patch("msgraph_mcp.calendar.GraphClient")
+    def test_basic_request(self, MockClient):
+        client = MockClient.return_value
+        client.request.return_value = {
+            "value": [
+                {
+                    "scheduleId": "alice@example.com",
+                    "availabilityView": "0010220",
+                    "scheduleItems": [
+                        {"status": "busy", "start": {"dateTime": "2026-04-01T10:00:00"}, "end": {"dateTime": "2026-04-01T11:00:00"}},
+                    ],
+                },
+            ],
+        }
+        result = get_schedule(
+            account_id=None,
+            emails=["alice@example.com"],
+            start_iso="2026-04-01T00:00:00",
+            end_iso="2026-04-01T23:59:59",
+        )
+        assert len(result) == 1
+        assert result[0].email == "alice@example.com"
+        assert result[0].availability_view == "0010220"
+        call_args = client.request.call_args
+        assert call_args[0] == ("POST", "/me/calendar/getSchedule")
