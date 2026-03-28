@@ -487,6 +487,82 @@ def bulk_manage_messages_multi_pass(
     }
 
 
+def create_draft(
+    account_id: str | None = None,
+    *,
+    to: list[str],
+    subject: str,
+    body: str,
+    cc: list[str] | None = None,
+    bcc: list[str] | None = None,
+    send_as: str | None = None,
+) -> dict:
+    """Create a draft message without sending it."""
+    client = GraphClient(account_id)
+    message_body: dict = {
+        "subject": subject,
+        "body": {"contentType": "text", "content": body},
+        "toRecipients": _build_recipients(to),
+    }
+    if cc:
+        message_body["ccRecipients"] = _build_recipients(cc)
+    if bcc:
+        message_body["bccRecipients"] = _build_recipients(bcc)
+    from_field = _build_from(send_as)
+    if from_field:
+        message_body["from"] = from_field
+
+    draft = client.request("POST", "/me/messages", json_body=message_body) or {}
+    preview = _draft_preview(draft)
+    return {"ok": True, "draft": preview.model_dump()}
+
+
+def update_draft(
+    account_id: str | None = None,
+    *,
+    message_id: str,
+    to: list[str] | None = None,
+    subject: str | None = None,
+    body: str | None = None,
+    cc: list[str] | None = None,
+    bcc: list[str] | None = None,
+    send_as: str | None = None,
+) -> dict:
+    """Update a draft message.  Only provided fields are changed."""
+    validate_path_segment(message_id, "message_id")
+    client = GraphClient(account_id)
+    update: dict = {}
+    if subject is not None:
+        update["subject"] = subject
+    if body is not None:
+        update["body"] = {"contentType": "text", "content": body}
+    if to is not None:
+        update["toRecipients"] = _build_recipients(to)
+    if cc is not None:
+        update["ccRecipients"] = _build_recipients(cc)
+    if bcc is not None:
+        update["bccRecipients"] = _build_recipients(bcc)
+    from_field = _build_from(send_as)
+    if from_field:
+        update["from"] = from_field
+
+    result = client.request("PATCH", f"/me/messages/{message_id}", json_body=update) or {}
+    preview = _draft_preview(result)
+    return {"ok": True, "draft": preview.model_dump()}
+
+
+def send_draft(
+    account_id: str | None = None,
+    *,
+    message_id: str,
+) -> dict:
+    """Send a previously created draft message."""
+    validate_path_segment(message_id, "message_id")
+    client = GraphClient(account_id)
+    client.request("POST", f"/me/messages/{message_id}/send")
+    return {"ok": True, "action": "sent", "message_id": message_id}
+
+
 def _build_recipients(emails: list[str] | None) -> list[dict]:
     """Convert a list of email strings to Graph recipient format."""
     if not emails:

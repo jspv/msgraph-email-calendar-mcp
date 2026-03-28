@@ -248,3 +248,80 @@ class TestForwardMessage:
         assert "/forward" in call_args[0][1]
         body = call_args[1]["json_body"]
         assert body["toRecipients"][0]["emailAddress"]["address"] == "someone@example.com"
+
+
+from msgraph_mcp.mail import create_draft, update_draft, send_draft
+
+
+class TestCreateDraft:
+    @patch("msgraph_mcp.mail.GraphClient")
+    def test_creates_draft(self, MockClient):
+        client = MockClient.return_value
+        client.request.return_value = {
+            "id": "draft-1",
+            "subject": "Draft Subject",
+            "from": {"emailAddress": {"address": "me@example.com"}},
+            "toRecipients": [{"emailAddress": {"address": "to@example.com"}}],
+            "ccRecipients": [],
+            "bccRecipients": [],
+            "bodyPreview": "Draft body",
+        }
+        result = create_draft(
+            account_id=None,
+            to=["to@example.com"],
+            subject="Draft Subject",
+            body="Draft body",
+        )
+        assert result["ok"] is True
+        assert result["draft"]["id"] == "draft-1"
+        call_args = client.request.call_args
+        assert call_args[0] == ("POST", "/me/messages")
+
+
+class TestUpdateDraft:
+    @patch("msgraph_mcp.mail.GraphClient")
+    def test_updates_draft(self, MockClient):
+        client = MockClient.return_value
+        client.request.return_value = {
+            "id": "draft-1",
+            "subject": "Updated Subject",
+            "from": {"emailAddress": {"address": "me@example.com"}},
+            "toRecipients": [{"emailAddress": {"address": "new@example.com"}}],
+            "ccRecipients": [],
+            "bccRecipients": [],
+            "bodyPreview": "Updated body",
+        }
+        result = update_draft(
+            account_id=None,
+            message_id="draft-1",
+            subject="Updated Subject",
+            body="Updated body",
+        )
+        assert result["ok"] is True
+        call_args = client.request.call_args
+        assert call_args[0] == ("PATCH", "/me/messages/draft-1")
+
+    @patch("msgraph_mcp.mail.GraphClient")
+    def test_only_sends_provided_fields(self, MockClient):
+        client = MockClient.return_value
+        client.request.return_value = {
+            "id": "draft-1", "subject": "New Subject",
+            "from": None, "toRecipients": [], "ccRecipients": [], "bccRecipients": [],
+            "bodyPreview": "",
+        }
+        update_draft(account_id=None, message_id="draft-1", subject="New Subject")
+        body = client.request.call_args[1]["json_body"]
+        assert "subject" in body
+        assert "body" not in body
+        assert "toRecipients" not in body
+
+
+class TestSendDraft:
+    @patch("msgraph_mcp.mail.GraphClient")
+    def test_sends_draft(self, MockClient):
+        client = MockClient.return_value
+        client.request.return_value = None
+        result = send_draft(account_id=None, message_id="draft-1")
+        assert result["ok"] is True
+        call_args = client.request.call_args
+        assert call_args[0] == ("POST", "/me/messages/draft-1/send")
