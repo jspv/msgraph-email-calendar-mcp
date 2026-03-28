@@ -4,8 +4,11 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+from .config import settings
 from .graph import GraphClient, validate_path_segment
 from .models import (
+    AttachmentDetail,
+    AttachmentSummary,
     DraftPreview,
     MailFolderSummary,
     MailMessageDetail,
@@ -561,6 +564,96 @@ def send_draft(
     client = GraphClient(account_id)
     client.request("POST", f"/me/messages/{message_id}/send")
     return {"ok": True, "action": "sent", "message_id": message_id}
+
+
+def list_attachments(
+    account_id: str | None = None,
+    *,
+    message_id: str,
+) -> list[AttachmentSummary]:
+    """List attachment metadata for a message."""
+    validate_path_segment(message_id, "message_id")
+    client = GraphClient(account_id)
+    payload = client.request(
+        "GET",
+        f"/me/messages/{message_id}/attachments",
+        params={"$select": "id,name,size,contentType,isInline"},
+    ) or {"value": []}
+    return [
+        AttachmentSummary(
+            id=item["id"],
+            name=item.get("name"),
+            size=item.get("size"),
+            content_type=item.get("contentType"),
+            is_inline=bool(item.get("isInline", False)),
+        )
+        for item in payload.get("value", [])
+    ]
+
+
+def get_attachment(
+    account_id: str | None = None,
+    *,
+    message_id: str,
+    attachment_id: str,
+) -> AttachmentDetail:
+    """Download a single attachment.  Returns inline base64 if under the size limit."""
+    validate_path_segment(message_id, "message_id")
+    validate_path_segment(attachment_id, "attachment_id")
+    client = GraphClient(account_id)
+    item = client.request(
+        "GET",
+        f"/me/messages/{message_id}/attachments/{attachment_id}",
+    ) or {}
+    size = item.get("size") or 0
+    if size > settings.max_attachment_inline_size:
+        return AttachmentDetail(
+            id=item.get("id", attachment_id),
+            name=item.get("name"),
+            size=size,
+            content_type=item.get("contentType"),
+            is_inline=bool(item.get("isInline", False)),
+            content_omitted=True,
+            omit_reason=f"Attachment size {size} exceeds limit {settings.max_attachment_inline_size}",
+        )
+    return AttachmentDetail(
+        id=item.get("id", attachment_id),
+        name=item.get("name"),
+        size=size,
+        content_type=item.get("contentType"),
+        is_inline=bool(item.get("isInline", False)),
+        content_base64=item.get("contentBytes"),
+    )
+
+
+def add_attachment_to_draft(
+    account_id: str | None = None,
+    *,
+    message_id: str,
+    name: str,
+    content_base64: str,
+    content_type: str = "application/octet-stream",
+) -> dict:
+    """Attach a file to a draft message."""
+    validate_path_segment(message_id, "message_id")
+    client = GraphClient(account_id)
+    payload = {
+        "@odata.type": "#microsoft.graph.fileAttachment",
+        "name": name,
+        "contentType": content_type,
+        "contentBytes": content_base64,
+    }
+    result = client.request(
+        "POST",
+        f"/me/messages/{message_id}/attachments",
+        json_body=payload,
+    ) or {}
+    return {
+        "ok": True,
+        "attachment_id": result.get("id"),
+        "name": name,
+        "content_type": content_type,
+    }
 
 
 def _build_recipients(emails: list[str] | None) -> list[dict]:
