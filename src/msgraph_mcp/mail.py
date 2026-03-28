@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 
 from .graph import GraphClient, validate_path_segment
 from .models import (
+    DraftPreview,
     MailFolderSummary,
     MailMessageDetail,
     MailMessageSummary,
@@ -483,4 +484,91 @@ def bulk_manage_messages_multi_pass(
         "matches": aggregate_matches if dry_run else None,
         "results": aggregate_results if not dry_run else None,
         "passes": passes,
+    }
+
+
+def _build_recipients(emails: list[str] | None) -> list[dict]:
+    """Convert a list of email strings to Graph recipient format."""
+    if not emails:
+        return []
+    return [{"emailAddress": {"address": e}} for e in emails]
+
+
+def _build_from(send_as: str | None) -> dict | None:
+    """Build a Graph 'from' field from an alias email address."""
+    if not send_as:
+        return None
+    return {"emailAddress": {"address": send_as}}
+
+
+def _draft_preview(payload: dict) -> DraftPreview:
+    """Extract a DraftPreview from a Graph message payload."""
+    from_addr = ((payload.get("from") or {}).get("emailAddress") or {}).get("address")
+    to_addrs = [
+        (r.get("emailAddress") or {}).get("address", "")
+        for r in (payload.get("toRecipients") or [])
+    ]
+    cc_addrs = [
+        (r.get("emailAddress") or {}).get("address", "")
+        for r in (payload.get("ccRecipients") or [])
+    ]
+    bcc_addrs = [
+        (r.get("emailAddress") or {}).get("address", "")
+        for r in (payload.get("bccRecipients") or [])
+    ]
+    return DraftPreview(
+        id=payload.get("id", ""),
+        subject=payload.get("subject"),
+        from_address=from_addr,
+        to_recipients=to_addrs,
+        cc_recipients=cc_addrs,
+        bcc_recipients=bcc_addrs,
+        body_preview=payload.get("bodyPreview"),
+    )
+
+
+def send_message(
+    account_id: str | None = None,
+    *,
+    to: list[str],
+    subject: str,
+    body: str,
+    cc: list[str] | None = None,
+    bcc: list[str] | None = None,
+    send_as: str | None = None,
+    dry_run: bool = True,
+) -> dict:
+    """Compose and send (or preview) an email message.
+
+    When *dry_run* is True (default), creates a temporary draft, returns
+    a preview, then deletes the draft.  Set *dry_run=False* to actually send.
+    """
+    client = GraphClient(account_id)
+    message_body: dict = {
+        "subject": subject,
+        "body": {"contentType": "text", "content": body},
+        "toRecipients": _build_recipients(to),
+    }
+    if cc:
+        message_body["ccRecipients"] = _build_recipients(cc)
+    if bcc:
+        message_body["bccRecipients"] = _build_recipients(bcc)
+    from_field = _build_from(send_as)
+    if from_field:
+        message_body["from"] = from_field
+
+    if dry_run:
+        draft = client.request("POST", "/me/messages", json_body=message_body) or {}
+        preview = _draft_preview(draft)
+        preview.message = "Dry-run: message NOT sent. Set dry_run=False to send."
+        client.request("DELETE", f"/me/messages/{draft['id']}")
+        return {"ok": True, "dry_run": True, "preview": preview.model_dump()}
+
+    client.request("POST", "/me/sendMail", json_body={"message": message_body})
+    return {
+        "ok": True,
+        "dry_run": False,
+        "action": "sent",
+        "to": to,
+        "subject": subject,
     }
