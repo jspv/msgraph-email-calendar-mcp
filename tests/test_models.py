@@ -8,6 +8,12 @@ from msgraph_mcp.models import (
     _location_label,
     _recipient_labels,
     _safe_parse_datetime,
+    AttachmentSummary,
+    AttachmentDetail,
+    DraftPreview,
+    PersonResult,
+    MeetingTimeSuggestion,
+    ScheduleEntry,
 )
 
 
@@ -130,3 +136,56 @@ class TestEventTimeLabel:
 
     def test_none_values(self):
         assert _event_time_label(None, None, is_all_day=False) is None
+
+
+class TestAttachmentSummary:
+    def test_defaults(self):
+        a = AttachmentSummary(id="att1")
+        assert a.id == "att1"
+        assert a.is_inline is False
+        assert a.size is None
+
+    def test_full(self):
+        a = AttachmentSummary(id="att1", name="doc.pdf", size=1024, content_type="application/pdf", is_inline=False)
+        assert a.name == "doc.pdf"
+        assert a.size == 1024
+
+
+class TestAttachmentDetail:
+    def test_with_content(self):
+        a = AttachmentDetail(id="att1", name="doc.pdf", size=100, content_base64="dGVzdA==")
+        assert a.content_base64 == "dGVzdA=="
+        assert a.content_omitted is False
+
+    def test_omitted(self):
+        a = AttachmentDetail(id="att1", name="big.zip", size=10_000_000, content_omitted=True, omit_reason="exceeds size limit")
+        assert a.content_omitted is True
+        assert a.content_base64 is None
+
+
+class TestDraftPreview:
+    def test_defaults(self):
+        d = DraftPreview(id="draft1", subject="Hello", to_recipients=["alice@example.com"])
+        assert d.subject == "Hello"
+        assert d.to_recipients == ["alice@example.com"]
+        assert d.cc_recipients == []
+
+
+class TestPersonResult:
+    def test_person(self):
+        p = PersonResult(name="Alice Smith", email="alice@example.com")
+        assert p.name == "Alice Smith"
+        assert p.email == "alice@example.com"
+
+
+class TestMeetingTimeSuggestion:
+    def test_defaults(self):
+        m = MeetingTimeSuggestion(start="2026-04-01T09:00:00", end="2026-04-01T10:00:00", confidence=100.0)
+        assert m.confidence == 100.0
+
+
+class TestScheduleEntry:
+    def test_defaults(self):
+        s = ScheduleEntry(email="alice@example.com", availability_view="0010")
+        assert s.email == "alice@example.com"
+        assert s.schedule_items == []

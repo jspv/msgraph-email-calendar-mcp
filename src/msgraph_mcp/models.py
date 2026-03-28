@@ -183,3 +183,58 @@ class CalendarEventDetail(BaseModel):
     is_cancelled: bool = False
     is_online_meeting: bool = False
     summary: str | None = None
+
+
+class AttachmentSummary(BaseModel):
+    """Metadata for a message attachment."""
+    id: str
+    name: str | None = None
+    size: int | None = None
+    content_type: str | None = None
+    is_inline: bool = False
+
+
+class AttachmentDetail(BaseModel):
+    """Attachment with optional inline content."""
+    id: str
+    name: str | None = None
+    size: int | None = None
+    content_type: str | None = None
+    is_inline: bool = False
+    content_base64: str | None = None
+    content_omitted: bool = False
+    omit_reason: str | None = None
+
+
+class DraftPreview(BaseModel):
+    """Preview of a draft message (used for dry-run send)."""
+    id: str
+    subject: str | None = None
+    from_address: str | None = None
+    to_recipients: list[str] = Field(default_factory=list)
+    cc_recipients: list[str] = Field(default_factory=list)
+    bcc_recipients: list[str] = Field(default_factory=list)
+    body_preview: str | None = None
+    message: str | None = None
+
+
+class PersonResult(BaseModel):
+    """A person found via people search."""
+    name: str | None = None
+    email: str | None = None
+
+
+class MeetingTimeSuggestion(BaseModel):
+    """A suggested meeting time slot."""
+    start: str | None = None
+    end: str | None = None
+    confidence: float | None = None
+    organizer_availability: str | None = None
+    attendee_availability: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class ScheduleEntry(BaseModel):
+    """Free/busy schedule for a single user."""
+    email: str
+    availability_view: str | None = None
+    schedule_items: list[dict[str, Any]] = Field(default_factory=list)

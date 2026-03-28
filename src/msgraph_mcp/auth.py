@@ -88,12 +88,25 @@ def _clear_pending_flow() -> None:
 
 
 
+def _framework_managed() -> bool:
+    """True when running inside the MCP Lambda wrapper framework."""
+    return bool(
+        os.environ.get("GRAPH_ACCESS_TOKEN")
+        or os.environ.get("OAUTH_AUTH_URL")
+        or os.environ.get("OAUTH_AUTHENTICATED")
+        or os.environ.get("SERVICE_NAME")
+    )
+
+
 def _cache_path() -> Path:
     path = settings.token_cache_path.resolve()
     parent = path.parent.resolve()
-    parent.mkdir(parents=True, exist_ok=True)
-    if parent.is_symlink():
-        raise AuthError("Token cache directory must not be a symlink")
+    # In Lambda, /var/task is read-only. Skip directory creation when
+    # the framework manages auth (token comes via env var, not cache).
+    if not _framework_managed():
+        parent.mkdir(parents=True, exist_ok=True)
+        if parent.is_symlink():
+            raise AuthError("Token cache directory must not be a symlink")
     return path
 
 
@@ -119,18 +132,25 @@ def _write_cache(content: str) -> None:
 
 
 def get_app() -> msal.PublicClientApplication:
-    """Create an MSAL ``PublicClientApplication`` with the local token cache."""
-    if not settings.client_id:
+    """Create an MSAL ``PublicClientApplication`` with the local token cache.
+
+    In framework-managed mode, returns a bare app with no cache
+    (the framework handles tokens via env vars, not MSAL).
+    """
+    client_id = settings.client_id or os.environ.get("MICROSOFT_CLIENT_ID", "")
+    if not client_id:
         raise AuthError("MICROSOFT_CLIENT_ID is required")
 
     authority = f"https://login.microsoftonline.com/{settings.tenant_id}"
     cache = msal.SerializableTokenCache()
-    cache_content = _read_cache()
-    if cache_content:
-        cache.deserialize(cache_content)
+
+    if not _framework_managed():
+        cache_content = _read_cache()
+        if cache_content:
+            cache.deserialize(cache_content)
 
     return msal.PublicClientApplication(
-        settings.client_id,
+        client_id,
         authority=authority,
         token_cache=cache,
     )
@@ -193,10 +213,14 @@ def complete_device_flow() -> dict[str, Any]:
 def get_access_token(account_id: str | None = None) -> str:
     """Silently acquire a valid access token for *account_id*.
 
-    Uses the first cached account when *account_id* is ``None``,
-    ``"default"``, ``"me"``, or ``"primary"``.  Raises ``AuthError``
-    if no matching account is found or silent refresh fails.
+    In framework-managed mode, returns the injected token directly.
+    Otherwise uses MSAL silent token acquisition with the local cache.
     """
+    # Framework-injected token (Lambda mode)
+    injected = os.environ.get("GRAPH_ACCESS_TOKEN")
+    if injected:
+        return injected
+
     app = get_app()
     accounts = app.get_accounts()
 
@@ -226,6 +250,13 @@ def get_access_token(account_id: str | None = None) -> str:
 
 def auth_status() -> dict[str, Any]:
     """Return a summary of current auth configuration and cached accounts."""
+    if _framework_managed():
+        return {
+            "configured": True,
+            "mode": "framework-managed",
+            "tenant_id": settings.tenant_id,
+            "scopes": list(settings.scopes),
+        }
     accounts = list_accounts()
     return {
         "configured": bool(settings.client_id),

@@ -30,6 +30,7 @@ class Settings:
     timeout_seconds: float = 30.0
     max_list_limit: int = 50
     max_event_limit: int = 100
+    max_attachment_inline_size: int = 1_572_864  # 1.5 MB
 
 
 
@@ -45,11 +46,15 @@ def load_settings() -> Settings:
     token_cache_path = Path(
         os.getenv("MICROSOFT_TOKEN_CACHE_PATH", ".data/msal_token_cache.json")
     ).expanduser()
+    max_attachment_inline_size = int(
+        os.getenv("MAX_ATTACHMENT_INLINE_SIZE", "1572864")
+    )
     return Settings(
         client_id=client_id,
         tenant_id=tenant_id,
         scopes=scopes,
         token_cache_path=token_cache_path,
+        max_attachment_inline_size=max_attachment_inline_size,
     )
 
 
