@@ -656,6 +656,117 @@ def add_attachment_to_draft(
     }
 
 
+def create_folder(
+    account_id: str | None = None,
+    *,
+    name: str,
+    parent_folder_id: str | None = None,
+) -> dict:
+    """Create a new mail folder, optionally under a parent folder."""
+    client = GraphClient(account_id)
+    if parent_folder_id:
+        validate_path_segment(parent_folder_id, "parent_folder_id")
+        path = f"/me/mailFolders/{parent_folder_id}/childFolders"
+    else:
+        path = "/me/mailFolders"
+    result = client.request("POST", path, json_body={"displayName": name}) or {}
+    folder = MailFolderSummary(
+        id=result.get("id", ""),
+        display_name=result.get("displayName", name),
+        total_item_count=result.get("totalItemCount"),
+        unread_item_count=result.get("unreadItemCount"),
+        child_folder_count=result.get("childFolderCount"),
+    )
+    return {"ok": True, "folder": folder.model_dump()}
+
+
+def list_child_folders(
+    account_id: str | None = None,
+    *,
+    folder_id: str,
+) -> list[MailFolderSummary]:
+    """List subfolders of a given mail folder."""
+    validate_path_segment(folder_id, "folder_id")
+    client = GraphClient(account_id)
+    payload = client.request(
+        "GET",
+        f"/me/mailFolders/{folder_id}/childFolders",
+        params={"$select": "id,displayName,totalItemCount,unreadItemCount,childFolderCount"},
+    ) or {"value": []}
+    return [
+        MailFolderSummary(
+            id=item["id"],
+            display_name=item.get("displayName", ""),
+            total_item_count=item.get("totalItemCount"),
+            unread_item_count=item.get("unreadItemCount"),
+            child_folder_count=item.get("childFolderCount"),
+        )
+        for item in payload.get("value", [])
+    ]
+
+
+_VALID_FLAG_STATUSES = {"flagged", "complete", "notFlagged"}
+
+
+def flag_message(
+    account_id: str | None = None,
+    *,
+    message_id: str,
+    flag_status: str,
+) -> dict:
+    """Set follow-up flag on a message.  Values: flagged, complete, notFlagged."""
+    if flag_status not in _VALID_FLAG_STATUSES:
+        raise ValueError(f"flag_status must be one of {_VALID_FLAG_STATUSES}")
+    validate_path_segment(message_id, "message_id")
+    client = GraphClient(account_id)
+    client.request("PATCH", f"/me/messages/{message_id}", json_body={"flag": {"flagStatus": flag_status}})
+    return {"ok": True, "message_id": message_id, "flag_status": flag_status}
+
+
+def categorize_message(
+    account_id: str | None = None,
+    *,
+    message_id: str,
+    categories: list[str],
+) -> dict:
+    """Apply color categories to a message."""
+    validate_path_segment(message_id, "message_id")
+    client = GraphClient(account_id)
+    client.request("PATCH", f"/me/messages/{message_id}", json_body={"categories": categories})
+    return {"ok": True, "message_id": message_id, "categories": categories}
+
+
+def list_aliases(account_id: str | None = None) -> dict:
+    """List email aliases available for the authenticated user.
+
+    Parses ``proxyAddresses`` — ``SMTP:`` (uppercase) is primary,
+    ``smtp:`` (lowercase) entries are aliases.
+    """
+    client = GraphClient(account_id)
+    profile = client.request(
+        "GET", "/me",
+        params={"$select": "mail,proxyAddresses,userPrincipalName"},
+    ) or {}
+    proxy_addresses = profile.get("proxyAddresses") or []
+    primary = profile.get("mail") or profile.get("userPrincipalName")
+    aliases: list[str] = []
+    all_addresses: list[str] = []
+    for addr in proxy_addresses:
+        if addr.startswith("SMTP:"):
+            primary = addr[5:]
+            all_addresses.append(addr[5:])
+        elif addr.startswith("smtp:"):
+            aliases.append(addr[5:])
+            all_addresses.append(addr[5:])
+    if primary and primary not in all_addresses:
+        all_addresses.insert(0, primary)
+    return {
+        "primary": primary,
+        "aliases": aliases,
+        "all_addresses": all_addresses,
+    }
+
+
 def _build_recipients(emails: list[str] | None) -> list[dict]:
     """Convert a list of email strings to Graph recipient format."""
     if not emails:
