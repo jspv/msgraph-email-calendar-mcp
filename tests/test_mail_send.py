@@ -9,6 +9,8 @@ from msgraph_mcp.mail import (
     _build_from,
     _draft_preview,
     send_message,
+    reply_to_message,
+    forward_message,
 )
 
 
@@ -121,3 +123,128 @@ class TestSendMessage:
         call_args = client.request.call_args
         body = call_args[1]["json_body"]
         assert body["message"]["from"]["emailAddress"]["address"] == "alias@example.com"
+
+
+class TestReplyToMessage:
+    @patch("msgraph_mcp.mail.GraphClient")
+    def test_dry_run_reply(self, MockClient):
+        client = MockClient.return_value
+        client.request.side_effect = [
+            # createReply returns draft
+            {
+                "id": "reply-draft-1",
+                "subject": "Re: Original",
+                "from": {"emailAddress": {"address": "me@example.com"}},
+                "toRecipients": [{"emailAddress": {"address": "sender@example.com"}}],
+                "ccRecipients": [],
+                "bccRecipients": [],
+                "bodyPreview": "",
+            },
+            # PATCH to set body
+            None,
+            # GET refreshed draft
+            {
+                "id": "reply-draft-1",
+                "subject": "Re: Original",
+                "from": {"emailAddress": {"address": "me@example.com"}},
+                "toRecipients": [{"emailAddress": {"address": "sender@example.com"}}],
+                "ccRecipients": [],
+                "bccRecipients": [],
+                "bodyPreview": "My reply",
+            },
+            # DELETE draft
+            None,
+        ]
+        result = reply_to_message(
+            account_id=None,
+            message_id="msg-1",
+            body="My reply",
+            dry_run=True,
+        )
+        assert result["dry_run"] is True
+        assert result["preview"]["subject"] == "Re: Original"
+
+    @patch("msgraph_mcp.mail.GraphClient")
+    def test_live_reply(self, MockClient):
+        client = MockClient.return_value
+        client.request.return_value = None
+        result = reply_to_message(
+            account_id=None,
+            message_id="msg-1",
+            body="My reply",
+            dry_run=False,
+        )
+        assert result["ok"] is True
+        call_args = client.request.call_args
+        assert "/reply" in call_args[0][1]
+
+    @patch("msgraph_mcp.mail.GraphClient")
+    def test_live_reply_all(self, MockClient):
+        client = MockClient.return_value
+        client.request.return_value = None
+        result = reply_to_message(
+            account_id=None,
+            message_id="msg-1",
+            body="My reply",
+            reply_all=True,
+            dry_run=False,
+        )
+        call_args = client.request.call_args
+        assert "/replyAll" in call_args[0][1]
+
+
+class TestForwardMessage:
+    @patch("msgraph_mcp.mail.GraphClient")
+    def test_dry_run_forward(self, MockClient):
+        client = MockClient.return_value
+        client.request.side_effect = [
+            # createForward returns draft
+            {
+                "id": "fwd-draft-1",
+                "subject": "Fw: Original",
+                "from": {"emailAddress": {"address": "me@example.com"}},
+                "toRecipients": [],
+                "ccRecipients": [],
+                "bccRecipients": [],
+                "bodyPreview": "",
+            },
+            # PATCH to set recipients + body
+            None,
+            # GET refreshed draft
+            {
+                "id": "fwd-draft-1",
+                "subject": "Fw: Original",
+                "from": {"emailAddress": {"address": "me@example.com"}},
+                "toRecipients": [{"emailAddress": {"address": "someone@example.com"}}],
+                "ccRecipients": [],
+                "bccRecipients": [],
+                "bodyPreview": "FYI",
+            },
+            # DELETE draft
+            None,
+        ]
+        result = forward_message(
+            account_id=None,
+            message_id="msg-1",
+            to=["someone@example.com"],
+            body="FYI",
+            dry_run=True,
+        )
+        assert result["dry_run"] is True
+        assert result["preview"]["to_recipients"] == ["someone@example.com"]
+
+    @patch("msgraph_mcp.mail.GraphClient")
+    def test_live_forward(self, MockClient):
+        client = MockClient.return_value
+        client.request.return_value = None
+        result = forward_message(
+            account_id=None,
+            message_id="msg-1",
+            to=["someone@example.com"],
+            dry_run=False,
+        )
+        assert result["ok"] is True
+        call_args = client.request.call_args
+        assert "/forward" in call_args[0][1]
+        body = call_args[1]["json_body"]
+        assert body["toRecipients"][0]["emailAddress"]["address"] == "someone@example.com"

@@ -572,3 +572,83 @@ def send_message(
         "to": to,
         "subject": subject,
     }
+
+
+def reply_to_message(
+    account_id: str | None = None,
+    *,
+    message_id: str,
+    body: str,
+    reply_all: bool = False,
+    send_as: str | None = None,
+    dry_run: bool = True,
+) -> dict:
+    """Reply to a message.  Dry-run creates a temporary reply draft for preview."""
+    validate_path_segment(message_id, "message_id")
+    client = GraphClient(account_id)
+    action = "replyAll" if reply_all else "reply"
+
+    if dry_run:
+        create_action = "createReplyAll" if reply_all else "createReply"
+        draft = client.request("POST", f"/me/messages/{message_id}/{create_action}") or {}
+        update_body: dict = {"body": {"contentType": "text", "content": body}}
+        from_field = _build_from(send_as)
+        if from_field:
+            update_body["from"] = from_field
+        client.request("PATCH", f"/me/messages/{draft['id']}", json_body=update_body)
+        refreshed = client.request(
+            "GET", f"/me/messages/{draft['id']}",
+            params={"$select": "id,subject,from,toRecipients,ccRecipients,bccRecipients,bodyPreview"},
+        ) or draft
+        preview = _draft_preview(refreshed)
+        preview.message = "Dry-run: reply NOT sent. Set dry_run=False to send."
+        client.request("DELETE", f"/me/messages/{draft['id']}")
+        return {"ok": True, "dry_run": True, "preview": preview.model_dump()}
+
+    json_body: dict = {"comment": body}
+    if send_as:
+        json_body["message"] = {"from": _build_from(send_as)}
+    client.request("POST", f"/me/messages/{message_id}/{action}", json_body=json_body)
+    return {"ok": True, "dry_run": False, "action": action, "message_id": message_id}
+
+
+def forward_message(
+    account_id: str | None = None,
+    *,
+    message_id: str,
+    to: list[str],
+    body: str | None = None,
+    send_as: str | None = None,
+    dry_run: bool = True,
+) -> dict:
+    """Forward a message.  Dry-run creates a temporary forward draft for preview."""
+    validate_path_segment(message_id, "message_id")
+    client = GraphClient(account_id)
+
+    if dry_run:
+        draft = client.request("POST", f"/me/messages/{message_id}/createForward") or {}
+        update_body: dict = {"toRecipients": _build_recipients(to)}
+        if body:
+            update_body["body"] = {"contentType": "text", "content": body}
+        from_field = _build_from(send_as)
+        if from_field:
+            update_body["from"] = from_field
+        client.request("PATCH", f"/me/messages/{draft['id']}", json_body=update_body)
+        refreshed = client.request(
+            "GET", f"/me/messages/{draft['id']}",
+            params={"$select": "id,subject,from,toRecipients,ccRecipients,bccRecipients,bodyPreview"},
+        ) or draft
+        preview = _draft_preview(refreshed)
+        preview.message = "Dry-run: forward NOT sent. Set dry_run=False to send."
+        client.request("DELETE", f"/me/messages/{draft['id']}")
+        return {"ok": True, "dry_run": True, "preview": preview.model_dump()}
+
+    json_body: dict = {
+        "toRecipients": _build_recipients(to),
+    }
+    if body:
+        json_body["comment"] = body
+    if send_as:
+        json_body["message"] = {"from": _build_from(send_as)}
+    client.request("POST", f"/me/messages/{message_id}/forward", json_body=json_body)
+    return {"ok": True, "dry_run": False, "action": "forward", "message_id": message_id, "to": to}
