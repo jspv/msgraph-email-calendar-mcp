@@ -128,6 +128,148 @@ def list_events(
 
 
 
+def create_event(
+    account_id: str | None = None,
+    *,
+    subject: str,
+    start_iso: str,
+    end_iso: str,
+    attendees: list[str] | None = None,
+    body: str | None = None,
+    location: str | None = None,
+    is_all_day: bool = False,
+    calendar_id: str | None = None,
+) -> dict:
+    """Create a new calendar event."""
+    client = GraphClient(account_id)
+    event_body: dict = {
+        "subject": subject,
+        "start": {"dateTime": start_iso, "timeZone": "UTC"},
+        "end": {"dateTime": end_iso, "timeZone": "UTC"},
+        "isAllDay": is_all_day,
+    }
+    if attendees:
+        event_body["attendees"] = [
+            {"emailAddress": {"address": email}, "type": "required"}
+            for email in attendees
+        ]
+    if body:
+        event_body["body"] = {"contentType": "text", "content": body}
+    if location:
+        event_body["location"] = {"displayName": location}
+
+    if calendar_id:
+        validate_path_segment(calendar_id, "calendar_id")
+        path = f"/me/calendars/{calendar_id}/events"
+    else:
+        path = "/me/calendar/events"
+
+    result = client.request("POST", path, json_body=event_body) or {}
+    return {
+        "ok": True,
+        "event": {
+            "id": result.get("id"),
+            "subject": result.get("subject"),
+            "start": result.get("start"),
+            "end": result.get("end"),
+            "web_link": result.get("webLink"),
+        },
+    }
+
+
+def update_event(
+    account_id: str | None = None,
+    *,
+    event_id: str,
+    subject: str | None = None,
+    start_iso: str | None = None,
+    end_iso: str | None = None,
+    attendees: list[str] | None = None,
+    body: str | None = None,
+    location: str | None = None,
+    is_all_day: bool | None = None,
+) -> dict:
+    """Update an existing calendar event.  Only provided fields are changed."""
+    validate_path_segment(event_id, "event_id")
+    client = GraphClient(account_id)
+    update: dict = {}
+    if subject is not None:
+        update["subject"] = subject
+    if start_iso is not None:
+        update["start"] = {"dateTime": start_iso, "timeZone": "UTC"}
+    if end_iso is not None:
+        update["end"] = {"dateTime": end_iso, "timeZone": "UTC"}
+    if attendees is not None:
+        update["attendees"] = [
+            {"emailAddress": {"address": email}, "type": "required"}
+            for email in attendees
+        ]
+    if body is not None:
+        update["body"] = {"contentType": "text", "content": body}
+    if location is not None:
+        update["location"] = {"displayName": location}
+    if is_all_day is not None:
+        update["isAllDay"] = is_all_day
+
+    result = client.request("PATCH", f"/me/events/{event_id}", json_body=update) or {}
+    return {
+        "ok": True,
+        "event": {
+            "id": result.get("id"),
+            "subject": result.get("subject"),
+            "start": result.get("start"),
+            "end": result.get("end"),
+        },
+    }
+
+
+_VALID_RESPONSES = {"accept", "decline", "tentativelyAccept"}
+
+
+def delete_event(
+    account_id: str | None = None,
+    *,
+    event_id: str,
+    cancel_message: str | None = None,
+) -> dict:
+    """Delete or cancel a calendar event.
+
+    If *cancel_message* is provided, sends a cancellation notification
+    to attendees instead of silently deleting.
+    """
+    validate_path_segment(event_id, "event_id")
+    client = GraphClient(account_id)
+    if cancel_message:
+        client.request(
+            "POST",
+            f"/me/events/{event_id}/cancel",
+            json_body={"comment": cancel_message},
+        )
+        return {"ok": True, "event_id": event_id, "action": "cancelled"}
+    client.request("DELETE", f"/me/events/{event_id}")
+    return {"ok": True, "event_id": event_id, "action": "deleted"}
+
+
+def respond_to_event(
+    account_id: str | None = None,
+    *,
+    event_id: str,
+    response: str,
+    message: str | None = None,
+) -> dict:
+    """Accept, decline, or tentatively accept a meeting invite."""
+    if response not in _VALID_RESPONSES:
+        raise ValueError(f"response must be one of {_VALID_RESPONSES}")
+    validate_path_segment(event_id, "event_id")
+    client = GraphClient(account_id)
+    json_body: dict = {}
+    if message:
+        json_body["comment"] = message
+    json_body["sendResponse"] = True
+    client.request("POST", f"/me/events/{event_id}/{response}", json_body=json_body)
+    return {"ok": True, "event_id": event_id, "response": response}
+
+
 def get_event(account_id: str | None, event_id: str) -> CalendarEventDetail:
     """Fetch full details for a single calendar event."""
     validate_path_segment(event_id, "event_id")
