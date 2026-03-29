@@ -2,10 +2,15 @@
 
 Provides ``GraphClient`` for making authenticated requests with automatic
 retry/backoff, pagination, and next-link security validation.
+
+When running inside the MCP Lambda wrapper framework, the environment
+variable ``GRAPH_ACCESS_TOKEN`` is set by the framework's credential
+manager.  If present, it is used directly and MSAL is bypassed entirely.
 """
 
 from __future__ import annotations
 
+import os
 import re
 import time
 from typing import Any
@@ -43,8 +48,13 @@ class GraphClient:
         self.account_id = account_id
 
     def _headers(self) -> dict[str, str]:
+        # Framework-injected token takes precedence (Lambda mode)
+        token = os.environ.get("GRAPH_ACCESS_TOKEN")
+        if not token:
+            # Fall back to MSAL (local/standalone mode)
+            token = get_access_token(self.account_id)
         return {
-            "Authorization": f"Bearer {get_access_token(self.account_id)}",
+            "Authorization": f"Bearer {token}",
             "Accept": "application/json",
         }
 

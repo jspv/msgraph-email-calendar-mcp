@@ -1,4 +1,9 @@
-"""Outlook calendar operations: list calendars, list events, and get event details."""
+"""Outlook calendar operations: list calendars, list events, and get event details.
+
+Supports shared calendars via the *user_id* parameter.  When provided,
+requests target ``/users/{user_id}/…`` instead of ``/me/…``.  Requires
+the ``Calendars.ReadWrite.Shared`` scope.
+"""
 
 from __future__ import annotations
 
@@ -20,6 +25,14 @@ from .models import (
 
 
 
+def _base_path(user_id: str | None) -> str:
+    """Return ``/me`` or ``/users/{user_id}`` as the request base."""
+    if user_id:
+        validate_path_segment(user_id, "user_id")
+        return f"/users/{user_id}"
+    return "/me"
+
+
 def _resolve_time_window(start_iso: str | None, end_iso: str | None) -> tuple[str, str]:
     """Fill in missing start/end with sensible defaults (14-day window)."""
     now = datetime.now(timezone.utc)
@@ -39,12 +52,13 @@ def _resolve_time_window(start_iso: str | None, end_iso: str | None) -> tuple[st
 
 
 
-def list_calendars(account_id: str | None = None) -> list[CalendarSummary]:
-    """Return all readable calendars for the authenticated account."""
+def list_calendars(account_id: str | None = None, user_id: str | None = None) -> list[CalendarSummary]:
+    """Return all readable calendars.  Pass *user_id* for shared calendars."""
     client = GraphClient(account_id)
+    base = _base_path(user_id)
     payload = client.request(
         "GET",
-        "/me/calendars",
+        f"{base}/calendars",
         params={
             "$select": "id,name,color,isDefaultCalendar,canEdit",
             "$top": 50,
@@ -79,16 +93,18 @@ def list_events(
     end_iso: str | None = None,
     calendar_id: str | None = None,
     limit: int = 25,
+    user_id: str | None = None,
 ) -> list[CalendarEventSummary]:
-    """List events in a time range from the default or specified calendar."""
+    """List events in a time range.  Pass *user_id* for shared calendars."""
     client = GraphClient(account_id)
+    base = _base_path(user_id)
     start_iso, end_iso = _resolve_time_window(start_iso, end_iso)
 
     if calendar_id:
         validate_path_segment(calendar_id, "calendar_id")
-        path = f"/me/calendars/{calendar_id}/calendarView"
+        path = f"{base}/calendars/{calendar_id}/calendarView"
     else:
-        path = "/me/calendar/calendarView"
+        path = f"{base}/calendar/calendarView"
 
     items = client.paginate(
         path,
@@ -141,9 +157,11 @@ def create_event(
     location: str | None = None,
     is_all_day: bool = False,
     calendar_id: str | None = None,
+    user_id: str | None = None,
 ) -> dict:
-    """Create a new calendar event."""
+    """Create a new calendar event.  Pass *user_id* for shared calendars."""
     client = GraphClient(account_id)
+    base = _base_path(user_id)
     event_body: dict = {
         "subject": subject,
         "start": {"dateTime": start_iso, "timeZone": "UTC"},
@@ -162,9 +180,9 @@ def create_event(
 
     if calendar_id:
         validate_path_segment(calendar_id, "calendar_id")
-        path = f"/me/calendars/{calendar_id}/events"
+        path = f"{base}/calendars/{calendar_id}/events"
     else:
-        path = "/me/calendar/events"
+        path = f"{base}/calendar/events"
 
     result = client.request("POST", path, json_body=event_body) or {}
     return {
@@ -190,10 +208,12 @@ def update_event(
     body: str | None = None,
     location: str | None = None,
     is_all_day: bool | None = None,
+    user_id: str | None = None,
 ) -> dict:
-    """Update an existing calendar event.  Only provided fields are changed."""
+    """Update an existing calendar event.  Pass *user_id* for shared calendars."""
     validate_path_segment(event_id, "event_id")
     client = GraphClient(account_id)
+    base = _base_path(user_id)
     update: dict = {}
     if subject is not None:
         update["subject"] = subject
@@ -213,7 +233,7 @@ def update_event(
     if is_all_day is not None:
         update["isAllDay"] = is_all_day
 
-    result = client.request("PATCH", f"/me/events/{event_id}", json_body=update) or {}
+    result = client.request("PATCH", f"{base}/events/{event_id}", json_body=update) or {}
     return {
         "ok": True,
         "event": {
@@ -233,22 +253,20 @@ def delete_event(
     *,
     event_id: str,
     cancel_message: str | None = None,
+    user_id: str | None = None,
 ) -> dict:
-    """Delete or cancel a calendar event.
-
-    If *cancel_message* is provided, sends a cancellation notification
-    to attendees instead of silently deleting.
-    """
+    """Delete or cancel a calendar event.  Pass *user_id* for shared calendars."""
     validate_path_segment(event_id, "event_id")
     client = GraphClient(account_id)
+    base = _base_path(user_id)
     if cancel_message:
         client.request(
             "POST",
-            f"/me/events/{event_id}/cancel",
+            f"{base}/events/{event_id}/cancel",
             json_body={"comment": cancel_message},
         )
         return {"ok": True, "event_id": event_id, "action": "cancelled"}
-    client.request("DELETE", f"/me/events/{event_id}")
+    client.request("DELETE", f"{base}/events/{event_id}")
     return {"ok": True, "event_id": event_id, "action": "deleted"}
 
 
@@ -258,27 +276,30 @@ def respond_to_event(
     event_id: str,
     response: str,
     message: str | None = None,
+    user_id: str | None = None,
 ) -> dict:
-    """Accept, decline, or tentatively accept a meeting invite."""
+    """Accept, decline, or tentatively accept a meeting invite.  Pass *user_id* for shared calendars."""
     if response not in _VALID_RESPONSES:
         raise ValueError(f"response must be one of {_VALID_RESPONSES}")
     validate_path_segment(event_id, "event_id")
     client = GraphClient(account_id)
+    base = _base_path(user_id)
     json_body: dict = {}
     if message:
         json_body["comment"] = message
     json_body["sendResponse"] = True
-    client.request("POST", f"/me/events/{event_id}/{response}", json_body=json_body)
+    client.request("POST", f"{base}/events/{event_id}/{response}", json_body=json_body)
     return {"ok": True, "event_id": event_id, "response": response}
 
 
-def get_event(account_id: str | None, event_id: str) -> CalendarEventDetail:
-    """Fetch full details for a single calendar event."""
+def get_event(account_id: str | None, event_id: str, user_id: str | None = None) -> CalendarEventDetail:
+    """Fetch full details for a single calendar event.  Pass *user_id* for shared calendars."""
     validate_path_segment(event_id, "event_id")
     client = GraphClient(account_id)
+    base = _base_path(user_id)
     item = client.request(
         "GET",
-        f"/me/events/{event_id}",
+        f"{base}/events/{event_id}",
         params={
             "$select": "id,subject,start,end,isAllDay,location,body,attendees,organizer,webLink,isCancelled,isOnlineMeeting",
         },

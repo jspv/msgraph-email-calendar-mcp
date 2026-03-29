@@ -23,7 +23,10 @@ class Settings:
     scopes: tuple[str, ...] = (
         "User.Read",
         "Mail.ReadWrite",
-        "Calendars.Read",
+        "Mail.Send",
+        "Calendars.ReadWrite",
+        "Calendars.ReadWrite.Shared",
+        "People.Read",
     )
     token_cache_path: Path = Path(".data/msal_token_cache.json")
     graph_base_url: str = "https://graph.microsoft.com/v1.0"
@@ -40,7 +43,7 @@ def load_settings() -> Settings:
     tenant_id = os.getenv("MICROSOFT_TENANT_ID", "common").strip() or "common"
     scopes_raw = os.getenv(
         "MICROSOFT_SCOPES",
-        "User.Read Mail.ReadWrite Calendars.Read",
+        "User.Read Mail.ReadWrite Mail.Send Calendars.ReadWrite Calendars.ReadWrite.Shared People.Read",
     )
     scopes = tuple(part for part in scopes_raw.split() if part)
     token_cache_path = Path(
