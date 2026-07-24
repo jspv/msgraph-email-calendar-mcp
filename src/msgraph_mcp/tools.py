@@ -12,6 +12,44 @@ from .config import settings
 mcp = FastMCP("msgraph-mcp")
 
 
+# ── Scope-based tool registration ──────────────────────────────────────
+#
+# Each capability maps to the Graph scopes that satisfy it. A tool is exposed
+# to MCP clients only when the configured scope set (from MICROSOFT_SCOPES,
+# via ``settings.scopes``) contains at least one acceptable scope. With the
+# default full scope set every tool registers, so behavior is unchanged unless
+# scopes are deliberately narrowed -- a read-only deployment simply never
+# advertises actions its token could not perform. Auth tools are exempt and
+# always register, so authentication remains possible before any scope exists.
+
+_MAIL_READ = ("Mail.Read", "Mail.ReadWrite")
+_MAIL_WRITE = ("Mail.ReadWrite",)
+_MAIL_SEND = ("Mail.Send",)
+_CALENDAR_READ = (
+    "Calendars.Read",
+    "Calendars.Read.Shared",
+    "Calendars.ReadWrite",
+    "Calendars.ReadWrite.Shared",
+)
+_CALENDAR_WRITE = ("Calendars.ReadWrite", "Calendars.ReadWrite.Shared")
+_USER = ("User.Read",)
+_PEOPLE = ("People.Read",)
+
+
+def _requires_scope(*alternatives: str):
+    """Register the decorated function as a tool only if a required scope is set.
+
+    Applies ``mcp.tool()`` when at least one of *alternatives* is present in
+    ``settings.scopes``; otherwise returns the function unregistered so it is
+    never surfaced to the model.
+    """
+    def decorator(func):
+        if set(settings.scopes).intersection(alternatives):
+            return mcp.tool()(func)
+        return func
+    return decorator
+
+
 @mcp.tool()
 def auth_status() -> dict:
     """Show current Microsoft auth configuration and cached accounts.
@@ -101,7 +139,7 @@ def finish_auth() -> dict:
 
 
 
-@mcp.tool()
+@_requires_scope(*_MAIL_READ)
 def list_folders(
     account_id: str | None = None,
     include_hidden: bool = False,
@@ -113,20 +151,20 @@ def list_folders(
     return [item.model_dump() for item in mail.list_folders(account_id, include_hidden)]
 
 
-@mcp.tool()
+@_requires_scope(*_MAIL_READ)
 def list_messages(account_id: str | None = None, folder: str = "inbox", limit: int = 10) -> list[dict]:
     """List recent mail messages from a folder."""
     bounded_limit = max(1, min(limit, settings.max_list_limit))
     return [item.model_dump() for item in mail.list_messages(account_id, folder, bounded_limit)]
 
 
-@mcp.tool()
+@_requires_scope(*_MAIL_READ)
 def get_message(message_id: str, account_id: str | None = None) -> dict:
     """Get a full read-only view of a specific mail message."""
     return mail.get_message(account_id, message_id).model_dump()
 
 
-@mcp.tool()
+@_requires_scope(*_MAIL_WRITE)
 def update_message(
     message_id: str,
     is_read: bool | None = None,
@@ -151,19 +189,19 @@ def update_message(
     return results
 
 
-@mcp.tool()
+@_requires_scope(*_MAIL_WRITE)
 def move_message(message_id: str, destination: str, account_id: str | None = None) -> dict:
     """Move a message to another folder. Requires Mail.ReadWrite permission."""
     return mail.move_message(account_id, message_id, destination)
 
 
-@mcp.tool()
+@_requires_scope(*_MAIL_WRITE)
 def delete_message(message_id: str, account_id: str | None = None, permanent: bool = False) -> dict:
     """Delete a message or move it to Deleted Items. Requires Mail.ReadWrite permission."""
     return mail.delete_message(account_id, message_id, permanent)
 
 
-@mcp.tool()
+@_requires_scope(*_MAIL_READ)
 def search_messages(query: str, account_id: str | None = None, limit: int = 10) -> list[dict]:
     """Search messages using Microsoft Graph message search."""
     bounded_limit = max(1, min(limit, settings.max_list_limit))
@@ -173,7 +211,7 @@ def search_messages(query: str, account_id: str | None = None, limit: int = 10) 
     return [item.model_dump() for item in mail.search_messages(account_id, safe_query, bounded_limit)]
 
 
-@mcp.tool()
+@_requires_scope(*_MAIL_WRITE)
 def bulk_manage_messages(
     account_id: str | None = None,
     folder: str = "inbox",
@@ -217,13 +255,13 @@ def bulk_manage_messages(
     )
 
 
-@mcp.tool()
+@_requires_scope(*_CALENDAR_READ)
 def list_calendars(account_id: str | None = None, user_id: str | None = None) -> list[dict]:
     """List readable calendars. Pass user_id for shared calendars (e.g. another user's email or object ID)."""
     return [item.model_dump() for item in calendar.list_calendars(account_id, user_id=user_id)]
 
 
-@mcp.tool()
+@_requires_scope(*_CALENDAR_READ)
 def list_events(
     account_id: str | None = None,
     start_iso: str | None = None,
@@ -240,7 +278,7 @@ def list_events(
     ]
 
 
-@mcp.tool()
+@_requires_scope(*_CALENDAR_READ)
 def get_event(event_id: str, account_id: str | None = None, user_id: str | None = None) -> dict:
     """Get full details for a specific calendar event. Pass user_id for shared calendars."""
     return calendar.get_event(account_id, event_id, user_id=user_id).model_dump()
@@ -249,7 +287,7 @@ def get_event(event_id: str, account_id: str | None = None, user_id: str | None 
 # ── Mail: Send ──────────────────────────────────────────────────────────
 
 
-@mcp.tool()
+@_requires_scope(*_MAIL_SEND)
 def send_message(
     to: list[str],
     subject: str,
@@ -267,7 +305,7 @@ def send_message(
     )
 
 
-@mcp.tool()
+@_requires_scope(*_MAIL_SEND)
 def reply_to_message(
     message_id: str,
     body: str,
@@ -283,7 +321,7 @@ def reply_to_message(
     )
 
 
-@mcp.tool()
+@_requires_scope(*_MAIL_SEND)
 def forward_message(
     message_id: str,
     to: list[str],
@@ -299,7 +337,7 @@ def forward_message(
     )
 
 
-@mcp.tool()
+@_requires_scope(*_MAIL_WRITE)
 def create_draft(
     to: list[str],
     subject: str,
@@ -319,7 +357,7 @@ def create_draft(
 # ── Mail: Drafts ───────────────────────────────────────────────────────
 
 
-@mcp.tool()
+@_requires_scope(*_MAIL_WRITE, *_MAIL_SEND)
 def manage_draft(
     message_id: str,
     to: list[str] | None = None,
@@ -349,7 +387,7 @@ def manage_draft(
 # ── Mail: Attachments ──────────────────────────────────────────────────
 
 
-@mcp.tool()
+@_requires_scope(*_MAIL_READ)
 def get_attachments(
     message_id: str,
     attachment_id: str | None = None,
@@ -361,7 +399,7 @@ def get_attachments(
     return [a.model_dump() for a in mail.list_attachments(account_id, message_id=message_id)]
 
 
-@mcp.tool()
+@_requires_scope(*_MAIL_WRITE)
 def add_attachment_to_draft(
     message_id: str,
     name: str,
@@ -379,7 +417,7 @@ def add_attachment_to_draft(
 # ── Mail: Organization ─────────────────────────────────────────────────
 
 
-@mcp.tool()
+@_requires_scope(*_MAIL_WRITE)
 def create_folder(
     name: str,
     parent_folder_id: str | None = None,
@@ -393,7 +431,7 @@ def create_folder(
 # ── Mail: Aliases ──────────────────────────────────────────────────────
 
 
-@mcp.tool()
+@_requires_scope(*_USER)
 def list_aliases(account_id: str | None = None) -> dict:
     """List email aliases (send-from addresses) for the authenticated user."""
     return mail.list_aliases(account_id)
@@ -402,7 +440,7 @@ def list_aliases(account_id: str | None = None) -> dict:
 # ── Calendar: Write ────────────────────────────────────────────────────
 
 
-@mcp.tool()
+@_requires_scope(*_CALENDAR_WRITE)
 def create_event(
     subject: str,
     start_iso: str,
@@ -423,7 +461,7 @@ def create_event(
     )
 
 
-@mcp.tool()
+@_requires_scope(*_CALENDAR_WRITE)
 def update_event(
     event_id: str,
     subject: str | None = None,
@@ -444,7 +482,7 @@ def update_event(
     )
 
 
-@mcp.tool()
+@_requires_scope(*_CALENDAR_WRITE)
 def delete_event(
     event_id: str,
     cancel_message: str | None = None,
@@ -455,7 +493,7 @@ def delete_event(
     return calendar.delete_event(account_id, event_id=event_id, cancel_message=cancel_message, user_id=user_id)
 
 
-@mcp.tool()
+@_requires_scope(*_CALENDAR_WRITE)
 def respond_to_event(
     event_id: str,
     response: str,
@@ -472,7 +510,7 @@ def respond_to_event(
 # ── Calendar: Scheduling ──────────────────────────────────────────────
 
 
-@mcp.tool()
+@_requires_scope(*_CALENDAR_READ)
 def check_availability(
     emails: list[str],
     start_iso: str,
@@ -501,7 +539,7 @@ def check_availability(
 # ── People ─────────────────────────────────────────────────────────────
 
 
-@mcp.tool()
+@_requires_scope(*_PEOPLE)
 def search_people(query: str, limit: int = 10, account_id: str | None = None) -> list[dict]:
     """Search for people by name to find their email addresses."""
     bounded_limit = max(1, min(limit, settings.max_list_limit))

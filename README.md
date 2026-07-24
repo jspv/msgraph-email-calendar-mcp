@@ -101,7 +101,9 @@ Add **delegated** Microsoft Graph permissions:
 | `Calendars.ReadWrite.Shared` | Access shared / delegated calendars |
 | `People.Read` | Search contacts by name |
 
-For **read-only** use, replace `Mail.ReadWrite` and `Mail.Send` with `Mail.Read`, and `Calendars.ReadWrite` / `Calendars.ReadWrite.Shared` with `Calendars.Read`. Write tools will return permission errors but everything else works.
+For **read-only** use, replace `Mail.ReadWrite` and `Mail.Send` with `Mail.Read`, and `Calendars.ReadWrite` / `Calendars.ReadWrite.Shared` with `Calendars.Read`, and set `MICROSOFT_SCOPES` to match.
+
+**Scope-based tool registration:** tools are exposed to the client only when a scope that satisfies them is present in `MICROSOFT_SCOPES`. A read-only scope set never advertises `delete_message`, `send_message`, `create_event`, etc. — the model can't attempt actions the token could not perform. With the default (full) scope set, all tools are available. The auth tools (`auth_status`, `start_auth`, `finish_auth`) are always registered so you can authenticate before any scope is granted.
 
 ### 4. Admin consent
 
