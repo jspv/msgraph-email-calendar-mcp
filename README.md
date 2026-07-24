@@ -12,7 +12,7 @@ A [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) server that g
 - **Compose** — send, reply, reply-all, forward with dry-run preview by default
 - **Drafts** — create, update, attach files, then send when ready
 - **Organize** — mark read/unread, flag, categorize, move to folder, soft- or hard-delete
-- **Bulk** — multi-pass filtered operations (delete, mark read/unread, move) with dry-run preview, up to 1 000 messages per call
+- **Bulk** — multi-pass filtered operations (delete, mark read/unread, move) with dry-run preview, scanning up to 500 messages per call (50 per pass x 10 passes; default 250)
 - **Folders & aliases** — create mail folders, list send-from addresses
 
 ### Calendar
@@ -55,7 +55,7 @@ A [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) server that g
 | Mail | `update_message` | Mark read/unread, flag, or categorize |
 | Mail | `move_message` | Move to a folder (supports well-known names) |
 | Mail | `delete_message` | Soft-delete or permanently delete |
-| Mail | `bulk_manage_messages` | Bulk filtered actions with dry-run (limit 1 000) |
+| Mail | `bulk_manage_messages` | Bulk filtered actions with dry-run (scans up to 500: 50/pass x 10 passes) |
 | Mail | `create_folder` | Create a new mail folder |
 | Mail | `list_aliases` | List email aliases / send-from addresses |
 | Calendar | `list_calendars` | List calendars (own or shared via `user_id`) |
@@ -262,6 +262,28 @@ Write operations default to safe behavior:
 | `forward_message` | `dry_run=True` | Preview before sending |
 | `bulk_manage_messages` | `dry_run=True` | Shows matches without executing |
 | `delete_message` | `permanent=False` | Moves to Deleted Items (recoverable) |
+
+### Bulk scan semantics
+
+`bulk_manage_messages` scans a bounded, newest-first window (up to 50 messages per
+pass x 10 passes = 500) and applies its filters client-side, so its counts describe
+only what was scanned — never the whole folder. The response reports this explicitly:
+
+| Field | Meaning |
+|---|---|
+| `scanned` | Distinct messages inspected this run |
+| `matched` | How many passed the filters within that window |
+| `total_in_folder` | Folder size, as a scale anchor |
+| `truncated` | `True` if the scan stopped before the folder end (more may exist deeper) |
+| `stop_reason` | `folder_exhausted` \| `max_passes_reached` \| `cursor_stalled` |
+| `acted` / `already_gone` / `failed` | Per-message outcomes of a live (non-dry-run) run |
+
+The mailbox is live, so counts are a point-in-time snapshot: re-running may
+legitimately see a different set. Collection and action are separate phases —
+messages moved or deleted (e.g. by a rule) between the two are reported as
+`already_gone`, not errors. `truncated=True` means matches may exist deeper than
+this call reached; it is **not** safe to read a converged count of 0 as "the folder
+is clean."
 
 ## Security
 

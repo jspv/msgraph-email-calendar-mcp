@@ -187,7 +187,16 @@ def bulk_manage_messages(
     max_passes: int = 5,
     dry_run: bool = True,
 ) -> dict:
-    """Bulk-manage messages with filtering. Supports dry-run, delete, move, and mark-read actions."""
+    """Bulk-manage messages with filtering. Supports dry-run, delete, move, and mark-read actions.
+
+    Scans newest-first over a bounded window (limit_per_pass x max_passes, capped
+    at 50 x 10 = 500) and filters client-side, so counts describe only what was
+    scanned. Check ``truncated``/``stop_reason`` in the response: if ``truncated``
+    is True, more matches may exist deeper than this run reached. The mailbox is
+    live, so counts are a point-in-time snapshot -- re-running may see a different
+    set. Collection and action are separate phases; messages moved or deleted
+    between them are reported as ``already_gone``, not errors.
+    """
     bounded_limit = max(1, min(limit, settings.max_event_limit))
     bounded_passes = max(1, min(max_passes, 10))
     return mail.bulk_manage_messages_multi_pass(

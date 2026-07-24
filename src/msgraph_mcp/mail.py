@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from .config import settings
+from .errors import GraphRequestError
 from .graph import GraphClient, validate_path_segment
 from .models import (
     AttachmentDetail,
@@ -386,6 +387,109 @@ def bulk_manage_messages(
 
 
 
+_BULK_ACTIONS = {"delete", "move", "mark_read", "mark_unread"}
+
+
+def _folder_total_count(client: GraphClient, folder_id: str) -> int | None:
+    """Return the folder's ``totalItemCount``, or ``None`` if unavailable.
+
+    Used only to give the caller a scale anchor (scanned vs. total); it is a
+    live figure and may already be stale by the time it is read.
+    """
+    try:
+        payload = client.request(
+            "GET",
+            f"/me/mailFolders/{folder_id}",
+            params={"$select": "totalItemCount"},
+        ) or {}
+    except GraphRequestError:
+        return None
+    return payload.get("totalItemCount")
+
+
+def _collect_matches(
+    client: GraphClient,
+    folder_id: str,
+    *,
+    filter_kwargs: dict[str, object],
+    top: int,
+    max_passes: int,
+) -> dict[str, object]:
+    """Non-mutating newest-first scan collecting messages that pass the filters.
+
+    Pagination is anchored to ``receivedDateTime`` via a ``le`` cursor rather
+    than to a ``$skip`` offset. On a live mailbox this matters: new mail
+    arriving at the top does not shift the cursor, and messages removed by
+    rules below the cursor simply drop out -- neither causes the offset-drift
+    skips that ``$skip`` paging suffers. Boundary ties on ``receivedDateTime``
+    are absorbed by using ``le`` and de-duplicating on message id.
+
+    Returns a dict with ``matches`` (summaries), ``scanned`` (distinct
+    messages inspected), ``passes``, ``exhausted`` (reached end of folder),
+    and ``stop_reason``.
+    """
+    top = max(1, min(top, 50))
+    select = "id,subject,from,receivedDateTime,isRead,hasAttachments,bodyPreview"
+
+    matches: list[MailMessageSummary] = []
+    seen_ids: set[str] = set()
+    scanned = 0
+    passes = 0
+    cursor: str | None = None
+    exhausted = False
+    stop_reason = "max_passes_reached"
+
+    while passes < max_passes:
+        params: dict[str, object] = {
+            "$top": top,
+            "$orderby": "receivedDateTime desc",
+            "$select": select,
+        }
+        if cursor is not None:
+            params["$filter"] = f"receivedDateTime le {cursor}"
+
+        payload = client.request(
+            "GET", f"/me/mailFolders/{folder_id}/messages", params=params
+        ) or {}
+        items = payload.get("value", [])
+        passes += 1
+
+        new_in_page = 0
+        oldest = cursor
+        for item in items:
+            message_id = item.get("id")
+            if message_id in seen_ids:
+                continue
+            seen_ids.add(message_id)
+            new_in_page += 1
+            scanned += 1
+            summary = _message_summary(item)
+            received = item.get("receivedDateTime")
+            if received and (oldest is None or received < oldest):
+                oldest = received
+            if _matches_filters(summary, **filter_kwargs):
+                matches.append(summary)
+
+        if len(items) < top:
+            exhausted = True
+            stop_reason = "folder_exhausted"
+            break
+        if new_in_page == 0 or oldest == cursor:
+            # A full page of messages sharing the cursor timestamp: cannot
+            # advance without a secondary sort key. Stop rather than loop.
+            stop_reason = "cursor_stalled"
+            break
+        cursor = oldest
+
+    return {
+        "matches": matches,
+        "scanned": scanned,
+        "passes": passes,
+        "exhausted": exhausted,
+        "stop_reason": stop_reason,
+    }
+
+
 def bulk_manage_messages_multi_pass(
     account_id: str | None = None,
     *,
@@ -400,47 +504,76 @@ def bulk_manage_messages_multi_pass(
     max_passes: int = 5,
     dry_run: bool = True,
 ) -> dict[str, object]:
-    """Multi-pass bulk operation that paginates through messages.
+    """Scan up to *max_passes* pages newest-first and act on matching messages.
 
-    Follows ``@odata.nextLink`` across up to *max_passes* pages,
-    applying filters and the chosen *action* to each match.
-    Defaults to dry-run mode.
+    Collection and action are two separate phases: the scan completes without
+    mutating anything, then the action is applied to the collected message ids.
+    This is deliberate. The previous implementation deleted/moved matches while
+    still paginating with ``$skip``, so its own mutations shifted the offset and
+    silently skipped messages -- and its dry-run preview did not match what the
+    live run would touch.
+
+    Because the mailbox is never static (mail arrives, rules move and delete
+    messages at any moment), the returned counts are a point-in-time snapshot,
+    **not** a guarantee. Re-running will legitimately see a different set.
+    Callers should read the reported fields rather than infer completeness:
+
+    * ``scanned`` -- distinct messages inspected this run.
+    * ``matched`` -- how many passed the filters within that window.
+    * ``total_in_folder`` -- folder size, as a scale anchor.
+    * ``truncated`` -- ``True`` if the scan stopped before the folder end, so
+      more matches may exist deeper than this run reached.
+    * ``stop_reason`` -- ``folder_exhausted`` | ``max_passes_reached`` |
+      ``cursor_stalled``.
+
+    In a live (non-dry-run) run, messages that a rule or another client moved
+    or deleted between collection and action are reported as ``already_gone``
+    rather than raised as errors.
     """
+    if action not in _BULK_ACTIONS:
+        raise ValueError(
+            "action must be one of: delete, move, mark_read, mark_unread"
+        )
+    if action == "move" and not destination:
+        raise ValueError("destination is required when action='move'")
+
     client = GraphClient(account_id)
     folder_id = FOLDERS.get(folder.lower(), folder)
     validate_path_segment(folder_id, "folder")
-    path = f"/me/mailFolders/{folder_id}/messages"
-    params = {
-        "$top": min(limit_per_pass, 50),
-        "$orderby": "receivedDateTime desc",
-        "$select": "id,subject,from,receivedDateTime,isRead,hasAttachments,bodyPreview",
+
+    filter_kwargs: dict[str, object] = {
+        "sender_contains": sender_contains,
+        "subject_contains": subject_contains,
+        "received_after": received_after,
+        "unread_only": unread_only,
     }
 
-    next_path: str | None = path
-    next_params: dict[str, object] | None = params
-    passes = 0
-    aggregate_matches: list[dict[str, object]] = []
-    aggregate_results: list[dict[str, object]] = []
-    seen_ids: set[str] = set()
+    collected = _collect_matches(
+        client,
+        folder_id,
+        filter_kwargs=filter_kwargs,
+        top=limit_per_pass,
+        max_passes=max_passes,
+    )
+    matches: list[MailMessageSummary] = collected["matches"]
+    truncated = not collected["exhausted"]
 
-    while next_path and passes < max_passes:
-        passes += 1
-        payload = client.request("GET", next_path, params=next_params) or {}
-        next_params = None
-        items = payload.get("value", [])
-        summaries = [_message_summary(item) for item in items]
-        matches = [
-            item for item in summaries
-            if _matches_filters(
-                item,
-                sender_contains=sender_contains,
-                subject_contains=subject_contains,
-                received_after=received_after,
-                unread_only=unread_only,
-            )
-        ]
+    report: dict[str, object] = {
+        "ok": True,
+        "dry_run": dry_run,
+        "action": action,
+        "folder": folder,
+        "scanned": collected["scanned"],
+        "matched": len(matches),
+        "match_count": len(matches),  # backwards-compatible alias
+        "total_in_folder": _folder_total_count(client, folder_id),
+        "passes": collected["passes"],
+        "truncated": truncated,
+        "stop_reason": collected["stop_reason"],
+    }
 
-        preview = [
+    if dry_run:
+        report["matches"] = [
             {
                 "id": item.id,
                 "subject": item.subject,
@@ -449,45 +582,54 @@ def bulk_manage_messages_multi_pass(
                 "summary": item.summary,
             }
             for item in matches
-            if item.id not in seen_ids
         ]
+        report["results"] = None
+        return report
 
-        if dry_run:
-            for item in preview:
-                seen_ids.add(item["id"])
-            aggregate_matches.extend(preview)
-        else:
-            for item in matches:
-                if item.id in seen_ids:
-                    continue
-                seen_ids.add(item.id)
-                if action == "delete":
-                    result = delete_message(account_id, item.id, permanent=False)
-                elif action == "mark_read":
-                    result = mark_message_read(account_id, item.id, True)
-                elif action == "mark_unread":
-                    result = mark_message_read(account_id, item.id, False)
-                elif action == "move":
-                    if not destination:
-                        raise ValueError("destination is required when action='move'")
-                    result = move_message(account_id, item.id, destination)
-                else:
-                    raise ValueError("action must be one of: delete, move, mark_read, mark_unread")
-                result["subject"] = item.subject
-                result["sender"] = item.sender_label
-                aggregate_results.append(result)
+    results: list[dict[str, object]] = []
+    acted = 0
+    already_gone = 0
+    failed = 0
+    for item in matches:
+        try:
+            if action == "delete":
+                result = delete_message(account_id, item.id, permanent=False)
+            elif action == "mark_read":
+                result = mark_message_read(account_id, item.id, True)
+            elif action == "mark_unread":
+                result = mark_message_read(account_id, item.id, False)
+            else:  # move (destination validated above)
+                result = move_message(account_id, item.id, destination)
+        except GraphRequestError as exc:
+            if exc.status_code in {404, 410}:
+                already_gone += 1
+                status = "already_gone"
+            else:
+                failed += 1
+                status = "error"
+            results.append(
+                {
+                    "ok": False,
+                    "message_id": item.id,
+                    "status": status,
+                    "error": str(exc),
+                    "subject": item.subject,
+                    "sender": item.sender_label,
+                }
+            )
+            continue
+        result["subject"] = item.subject
+        result["sender"] = item.sender_label
+        results.append(result)
+        acted += 1
 
-        next_path = payload.get("@odata.nextLink")
-
-    return {
-        "ok": True,
-        "dry_run": dry_run,
-        "action": action,
-        "match_count": len(aggregate_matches) if dry_run else len(aggregate_results),
-        "matches": aggregate_matches if dry_run else None,
-        "results": aggregate_results if not dry_run else None,
-        "passes": passes,
-    }
+    report["matches"] = None
+    report["results"] = results
+    report["acted"] = acted
+    report["already_gone"] = already_gone
+    report["failed"] = failed
+    report["match_count"] = acted  # live-run compat: count of actions performed
+    return report
 
 
 def create_draft(
