@@ -183,22 +183,26 @@ def bulk_manage_messages(
     unread_only: bool = False,
     action: str = "delete",
     destination: str | None = None,
-    limit: int = 50,
-    max_passes: int = 5,
+    limit: int | None = None,
     dry_run: bool = True,
 ) -> dict:
     """Bulk-manage messages with filtering. Supports dry-run, delete, move, and mark-read actions.
 
-    Scans newest-first over a bounded window (limit_per_pass x max_passes, capped
-    at 50 x 10 = 500) and filters client-side, so counts describe only what was
-    scanned. Check ``truncated``/``stop_reason`` in the response: if ``truncated``
-    is True, more matches may exist deeper than this run reached. The mailbox is
-    live, so counts are a point-in-time snapshot -- re-running may see a different
-    set. Collection and action are separate phases; messages moved or deleted
-    between them are reported as ``already_gone``, not errors.
+    By default (``limit=None``) this scans the **entire** folder newest-first, so
+    "find/act on all messages matching X" sees the whole folder, not a window.
+    Pass ``limit`` only to cap how many messages are scanned (e.g. ``limit=200``
+    scans at most the newest 200); the value is honored exactly, never silently
+    clamped. Filtering is client-side.
+
+    The response reports coverage honestly: ``truncated`` is False only when the
+    scan reached the end of the folder (``stop_reason="folder_exhausted"``), so a
+    match count is a true total; if ``limit`` cut the scan short it is True. The
+    mailbox is live, so counts are a point-in-time snapshot. Collection and action
+    are separate phases; messages moved or deleted between them are reported as
+    ``already_gone``, not errors.
     """
-    bounded_limit = max(1, min(limit, settings.max_event_limit))
-    bounded_passes = max(1, min(max_passes, 10))
+    if limit is not None and limit < 1:
+        raise ValueError("limit must be a positive integer, or None to scan the whole folder")
     return mail.bulk_manage_messages_multi_pass(
         account_id=account_id,
         folder=folder,
@@ -208,8 +212,7 @@ def bulk_manage_messages(
         unread_only=unread_only,
         action=action,
         destination=destination,
-        limit_per_pass=bounded_limit,
-        max_passes=bounded_passes,
+        scan_limit=limit,
         dry_run=dry_run,
     )
 

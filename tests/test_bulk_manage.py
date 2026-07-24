@@ -79,8 +79,9 @@ class TestReporting:
         assert all(m == "GET" for m, _ in calls)
 
     @patch("msgraph_mcp.mail.GraphClient")
-    def test_truncated_when_max_passes_reached(self, MockClient):
-        # Full pages with descending timestamps so the cursor keeps advancing.
+    def test_truncated_when_scan_limit_reached(self, MockClient):
+        # A folder with more than scan_limit messages: stop at the cap and
+        # report truncated, since more may exist deeper.
         request, _ = _fake_request(
             [
                 [_msg(1, "2026-01-04T00:00:00Z"), _msg(2, "2026-01-03T00:00:00Z")],
@@ -91,13 +92,33 @@ class TestReporting:
         MockClient.return_value.request.side_effect = request
 
         result = bulk_manage_messages_multi_pass(
-            folder="inbox", action="delete", limit_per_pass=2, max_passes=1, dry_run=True
+            folder="inbox", action="delete", scan_limit=2, dry_run=True
         )
 
-        assert result["passes"] == 1
         assert result["scanned"] == 2
         assert result["truncated"] is True
-        assert result["stop_reason"] == "max_passes_reached"
+        assert result["stop_reason"] == "scan_limit_reached"
+
+    @patch("msgraph_mcp.mail.GraphClient")
+    def test_default_scans_whole_folder(self, MockClient):
+        # No scan_limit: walk to the end across multiple pages. The last page is
+        # short, signalling the folder end -> not truncated, true total.
+        request, _ = _fake_request(
+            [
+                [_msg(i, f"2026-03-01T{i // 60:02d}:{i % 60:02d}:00Z") for i in range(1000)],
+                [_msg(1000 + i, f"2026-01-01T00:00:0{i}Z") for i in range(3)],
+            ],
+            total=1003,
+        )
+        MockClient.return_value.request.side_effect = request
+
+        result = bulk_manage_messages_multi_pass(folder="inbox", action="delete", dry_run=True)
+
+        assert result["scanned"] == 1003
+        assert result["matched"] == 1003
+        assert result["truncated"] is False
+        assert result["stop_reason"] == "folder_exhausted"
+        assert result["passes"] == 2
 
 
 class TestCollectThenAct:
@@ -151,3 +172,7 @@ class TestValidation:
     def test_move_requires_destination(self):
         with pytest.raises(ValueError, match="destination is required"):
             bulk_manage_messages_multi_pass(folder="inbox", action="move", dry_run=True)
+
+    def test_rejects_non_positive_scan_limit(self):
+        with pytest.raises(ValueError, match="scan_limit must be a positive integer"):
+            bulk_manage_messages_multi_pass(folder="inbox", action="delete", scan_limit=0, dry_run=True)
