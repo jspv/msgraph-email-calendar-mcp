@@ -24,7 +24,7 @@
 - `list_messages` limit: capped at `max_list_limit` (default 50).
 - `list_events` limit: capped at `max_event_limit` (default 100).
 - `search_messages` limit: capped at `max_list_limit` (default 50). Empty queries rejected.
-- `bulk_manage_messages` limit per pass: capped at `max_event_limit` (default 100). Max passes: capped at 10.
+- `bulk_manage_messages`: scans the whole folder by default; optional `limit` bounds the scan and is honored exactly (must be a positive integer). Paged internally at up to 1000 messages/request (Graph's max). An unfiltered whole-folder scan therefore reads every message in the folder — bounded by folder size, not a fixed cap.
 
 ## Write operations
 

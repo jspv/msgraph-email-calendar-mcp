@@ -91,7 +91,7 @@ python3 scripts/smoke_test.py list-events --limit 10
 | `mark_message_read` | `message_id`, `is_read` | Toggle read/unread |
 | `move_message` | `message_id`, `destination_folder` | Accepts well-known names: `inbox`, `drafts`, `sent`, `archive`, `deleted`, `junk` |
 | `delete_message` | `message_id`, `permanent=False` | Soft-delete by default |
-| `bulk_manage_messages` | filters + `action`, `dry_run=True` | Dry-run **on** by default — pass `dry_run=False` to execute |
+| `bulk_manage_messages` | filters + `action`, optional `limit`, `dry_run=True` | Dry-run **on** by default. Scans the whole folder unless `limit` is given. Check `truncated`/`stop_reason` in the result — `truncated=False` means the count is a true folder total |
 
 ### Calendar
 
@@ -112,7 +112,7 @@ These are load-bearing constraints — do not weaken them:
 - **Token cache permissions** (`auth.py`): Cache file is written `0600`, parent directory `0700`. Preserve these when modifying auth code.
 - **Soft-delete default**: `delete_message(permanent=False)` moves to Deleted Items. The `permanent=True` path is irreversible — keep the default.
 - **Bulk dry-run default**: `bulk_manage_messages(dry_run=True)` previews without acting. Always confirm intent before setting `dry_run=False`.
-- **Input caps**: List limits are capped in `tools.py` (50 messages, 100 events, 1000 bulk). Do not raise these without understanding Graph API rate limits.
+- **Input caps**: `list_messages` and `search_messages` are capped at 50, `list_events` at 100 (in `tools.py`). `bulk_manage_messages` is **not** capped — it scans the whole folder by default; pass `limit` to bound it. Do not raise the list caps without understanding Graph API rate limits.
 
 ---
 
