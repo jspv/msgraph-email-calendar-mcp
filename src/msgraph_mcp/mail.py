@@ -389,6 +389,10 @@ def bulk_manage_messages(
 
 _BULK_ACTIONS = {"delete", "move", "mark_read", "mark_unread"}
 
+#: Largest page Microsoft Graph will return for a messages collection. Scanning
+#: at this size keeps a full-folder walk to a handful of round-trips.
+GRAPH_MAX_PAGE_SIZE = 1000
+
 
 def _folder_total_count(client: GraphClient, folder_id: str) -> int | None:
     """Return the folder's ``totalItemCount``, or ``None`` if unavailable.
@@ -412,10 +416,14 @@ def _collect_matches(
     folder_id: str,
     *,
     filter_kwargs: dict[str, object],
-    top: int,
-    max_passes: int,
+    scan_limit: int | None,
 ) -> dict[str, object]:
     """Non-mutating newest-first scan collecting messages that pass the filters.
+
+    Walks the whole folder when *scan_limit* is ``None``; otherwise stops once
+    *scan_limit* distinct messages have been inspected. Pages at
+    ``GRAPH_MAX_PAGE_SIZE`` (or the remaining budget, whichever is smaller) so a
+    full-folder scan costs only a handful of round-trips.
 
     Pagination is anchored to ``receivedDateTime`` via a ``le`` cursor rather
     than to a ``$skip`` offset. On a live mailbox this matters: new mail
@@ -425,10 +433,9 @@ def _collect_matches(
     are absorbed by using ``le`` and de-duplicating on message id.
 
     Returns a dict with ``matches`` (summaries), ``scanned`` (distinct
-    messages inspected), ``passes``, ``exhausted`` (reached end of folder),
-    and ``stop_reason``.
+    messages inspected), ``passes`` (pages fetched), ``exhausted`` (reached the
+    end of the folder), and ``stop_reason``.
     """
-    top = max(1, min(top, 50))
     select = "id,subject,from,receivedDateTime,isRead,hasAttachments,bodyPreview"
 
     matches: list[MailMessageSummary] = []
@@ -437,9 +444,18 @@ def _collect_matches(
     passes = 0
     cursor: str | None = None
     exhausted = False
-    stop_reason = "max_passes_reached"
+    stop_reason = "folder_exhausted"
 
-    while passes < max_passes:
+    while True:
+        if scan_limit is not None and scanned >= scan_limit:
+            stop_reason = "scan_limit_reached"
+            break
+
+        if scan_limit is None:
+            top = GRAPH_MAX_PAGE_SIZE
+        else:
+            top = max(1, min(GRAPH_MAX_PAGE_SIZE, scan_limit - scanned))
+
         params: dict[str, object] = {
             "$top": top,
             "$orderby": "receivedDateTime desc",
@@ -500,11 +516,15 @@ def bulk_manage_messages_multi_pass(
     unread_only: bool = False,
     action: str = "delete",
     destination: str | None = None,
-    limit_per_pass: int = 50,
-    max_passes: int = 5,
+    scan_limit: int | None = None,
     dry_run: bool = True,
 ) -> dict[str, object]:
-    """Scan up to *max_passes* pages newest-first and act on matching messages.
+    """Scan a folder newest-first and act on matching messages.
+
+    With *scan_limit* ``None`` (the default) the entire folder is scanned, so
+    "act on all messages matching X" covers the whole folder rather than a
+    window. A positive *scan_limit* caps how many messages are inspected and is
+    honored exactly -- never silently clamped.
 
     Collection and action are two separate phases: the scan completes without
     mutating anything, then the action is applied to the collected message ids.
@@ -519,17 +539,19 @@ def bulk_manage_messages_multi_pass(
     Callers should read the reported fields rather than infer completeness:
 
     * ``scanned`` -- distinct messages inspected this run.
-    * ``matched`` -- how many passed the filters within that window.
+    * ``matched`` -- how many passed the filters.
     * ``total_in_folder`` -- folder size, as a scale anchor.
-    * ``truncated`` -- ``True`` if the scan stopped before the folder end, so
-      more matches may exist deeper than this run reached.
-    * ``stop_reason`` -- ``folder_exhausted`` | ``max_passes_reached`` |
+    * ``truncated`` -- ``False`` only when the scan reached the end of the
+      folder; ``True`` if *scan_limit* cut it short, so more may exist deeper.
+    * ``stop_reason`` -- ``folder_exhausted`` | ``scan_limit_reached`` |
       ``cursor_stalled``.
 
     In a live (non-dry-run) run, messages that a rule or another client moved
     or deleted between collection and action are reported as ``already_gone``
     rather than raised as errors.
     """
+    if scan_limit is not None and scan_limit < 1:
+        raise ValueError("scan_limit must be a positive integer, or None to scan the whole folder")
     if action not in _BULK_ACTIONS:
         raise ValueError(
             "action must be one of: delete, move, mark_read, mark_unread"
@@ -552,8 +574,7 @@ def bulk_manage_messages_multi_pass(
         client,
         folder_id,
         filter_kwargs=filter_kwargs,
-        top=limit_per_pass,
-        max_passes=max_passes,
+        scan_limit=scan_limit,
     )
     matches: list[MailMessageSummary] = collected["matches"]
     truncated = not collected["exhausted"]

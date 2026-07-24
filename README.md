@@ -12,7 +12,7 @@ A [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) server that g
 - **Compose** — send, reply, reply-all, forward with dry-run preview by default
 - **Drafts** — create, update, attach files, then send when ready
 - **Organize** — mark read/unread, flag, categorize, move to folder, soft- or hard-delete
-- **Bulk** — multi-pass filtered operations (delete, mark read/unread, move) with dry-run preview, scanning up to 500 messages per call (50 per pass x 10 passes; default 250)
+- **Bulk** — filtered operations (delete, mark read/unread, move) with dry-run preview; scans the **entire folder** by default, or pass `limit` to cap how many messages are scanned
 - **Folders & aliases** — create mail folders, list send-from addresses
 
 ### Calendar
@@ -55,7 +55,7 @@ A [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) server that g
 | Mail | `update_message` | Mark read/unread, flag, or categorize |
 | Mail | `move_message` | Move to a folder (supports well-known names) |
 | Mail | `delete_message` | Soft-delete or permanently delete |
-| Mail | `bulk_manage_messages` | Bulk filtered actions with dry-run (scans up to 500: 50/pass x 10 passes) |
+| Mail | `bulk_manage_messages` | Bulk filtered actions with dry-run (scans whole folder by default; optional `limit`) |
 | Mail | `create_folder` | Create a new mail folder |
 | Mail | `list_aliases` | List email aliases / send-from addresses |
 | Calendar | `list_calendars` | List calendars (own or shared via `user_id`) |
@@ -265,17 +265,19 @@ Write operations default to safe behavior:
 
 ### Bulk scan semantics
 
-`bulk_manage_messages` scans a bounded, newest-first window (up to 50 messages per
-pass x 10 passes = 500) and applies its filters client-side, so its counts describe
-only what was scanned — never the whole folder. The response reports this explicitly:
+`bulk_manage_messages` scans newest-first and applies its filters client-side. By
+default (`limit=None`) it scans the **entire folder**, so "find/act on all messages
+matching X" returns a true total. Pass `limit=N` to scan at most the newest N
+messages; the value is honored exactly (paged internally at up to 1000/request),
+never silently clamped. The response reports coverage explicitly:
 
 | Field | Meaning |
 |---|---|
 | `scanned` | Distinct messages inspected this run |
-| `matched` | How many passed the filters within that window |
+| `matched` | How many passed the filters |
 | `total_in_folder` | Folder size, as a scale anchor |
-| `truncated` | `True` if the scan stopped before the folder end (more may exist deeper) |
-| `stop_reason` | `folder_exhausted` \| `max_passes_reached` \| `cursor_stalled` |
+| `truncated` | `False` only when the scan reached the folder end (count is a true total) |
+| `stop_reason` | `folder_exhausted` \| `scan_limit_reached` \| `cursor_stalled` |
 | `acted` / `already_gone` / `failed` | Per-message outcomes of a live (non-dry-run) run |
 
 The mailbox is live, so counts are a point-in-time snapshot: re-running may

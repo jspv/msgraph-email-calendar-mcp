@@ -118,8 +118,7 @@ def cmd_bulk_manage_messages(args: argparse.Namespace) -> int:
             unread_only=args.unread_only,
             action=args.action,
             destination=args.destination,
-            limit_per_pass=args.limit,
-            max_passes=args.max_passes,
+            scan_limit=args.limit,
             dry_run=not args.apply,
         )
     )
@@ -219,8 +218,10 @@ def build_parser() -> argparse.ArgumentParser:
     bulk_manage.add_argument("--unread-only", action="store_true")
     bulk_manage.add_argument("--action", default="delete", choices=["delete", "move", "mark_read", "mark_unread"])
     bulk_manage.add_argument("--destination")
-    bulk_manage.add_argument("--limit", type=int, default=50)
-    bulk_manage.add_argument("--max-passes", type=int, default=5)
+    bulk_manage.add_argument(
+        "--limit", type=int, default=None,
+        help="Max messages to scan; omit to scan the entire folder",
+    )
     bulk_manage.add_argument("--apply", action="store_true")
     bulk_manage.set_defaults(func=cmd_bulk_manage_messages)
 
