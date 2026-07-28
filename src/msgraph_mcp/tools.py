@@ -152,10 +152,27 @@ def list_folders(
 
 
 @_requires_scope(*_MAIL_READ)
-def list_messages(account_id: str | None = None, folder: str = "inbox", limit: int = 10) -> list[dict]:
-    """List recent mail messages from a folder."""
+def list_messages(
+    account_id: str | None = None,
+    folder: str = "inbox",
+    limit: int = 10,
+    since: str | None = None,
+    fields: list[str] | None = None,
+) -> list[dict]:
+    """List recent mail messages from a folder, newest first.
+
+    Pass `since` (ISO-8601) to filter server-side to messages received at or
+    after that time. Pass `fields` to override the selected columns (`id` is
+    always included) for a leaner or extended payload. Each summary includes
+    `conversation_id` for threading without a follow-up fetch.
+    """
     bounded_limit = max(1, min(limit, settings.max_list_limit))
-    return [item.model_dump() for item in mail.list_messages(account_id, folder, bounded_limit)]
+    return [
+        item.model_dump()
+        for item in mail.list_messages(
+            account_id, folder, bounded_limit, since=since, fields=fields
+        )
+    ]
 
 
 @_requires_scope(*_MAIL_READ)

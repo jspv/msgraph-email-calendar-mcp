@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 
 from .config import settings
@@ -81,6 +82,52 @@ def _sender_parts(payload: dict) -> tuple[str | None, str | None]:
 
 
 
+#: Columns selected for list-level message summaries. ``conversationId`` lets a
+#: client thread/group messages without a follow-up get_message per item.
+_SUMMARY_SELECT = (
+    "id",
+    "subject",
+    "from",
+    "receivedDateTime",
+    "isRead",
+    "hasAttachments",
+    "conversationId",
+    "bodyPreview",
+)
+
+
+def _sanitize_select(fields: list[str]) -> list[str]:
+    """Validate caller-supplied ``$select`` field names; always force ``id`` in.
+
+    Guards the OData ``$select`` against injection: each entry must be a simple
+    Graph property path (letters/digits/dot/slash). ``id`` is always present
+    because summaries and de-duplication depend on it.
+    """
+    clean: list[str] = []
+    for field in fields:
+        name = str(field).strip()
+        if not re.fullmatch(r"[A-Za-z][A-Za-z0-9./]*", name):
+            raise ValueError(f"invalid field name: {field!r}")
+        if name not in clean:
+            clean.append(name)
+    if "id" not in clean:
+        clean.insert(0, "id")
+    return clean
+
+
+def _validate_iso(value: str) -> str:
+    """Validate that *value* is an ISO-8601 datetime and return it unchanged.
+
+    Parsing also guards the ``$filter`` interpolation: a value that parses as a
+    datetime cannot smuggle OData operators.
+    """
+    try:
+        datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (ValueError, AttributeError) as exc:
+        raise ValueError(f"since must be an ISO-8601 datetime, got {value!r}") from exc
+    return value
+
+
 def _message_summary(item: dict) -> MailMessageSummary:
     sender_name, sender_email = _sender_parts(item)
     sender_label = _address_label(item.get("from"))
@@ -112,6 +159,7 @@ def _message_summary(item: dict) -> MailMessageSummary:
         sender_label=sender_label,
         is_read=bool(item.get("isRead", False)),
         has_attachments=bool(item.get("hasAttachments", False)),
+        conversation_id=item.get("conversationId"),
         body_preview=body_preview,
         summary=" — ".join(summary_parts),
     )
@@ -123,28 +171,38 @@ def list_messages(
     folder: str = "inbox",
     limit: int = 10,
     include_body_preview: bool = True,
+    since: str | None = None,
+    fields: list[str] | None = None,
 ) -> list[MailMessageSummary]:
-    """List recent messages from *folder*, newest first."""
+    """List recent messages from *folder*, newest first.
+
+    *since* (ISO-8601) applies a server-side ``$filter=receivedDateTime ge …``
+    so the time window is narrowed by Graph rather than by over-fetching.
+    *fields* overrides the selected columns (``id`` is always forced in) for
+    callers that want a leaner or extended payload; when omitted, the default
+    summary column set is used. Note that only columns backing
+    ``MailMessageSummary`` surface in the result — omitting one (e.g. ``from``)
+    yields a summary with that value ``None``.
+    """
     client = GraphClient(account_id)
     folder_id = FOLDERS.get(folder.lower(), folder)
     validate_path_segment(folder_id, "folder")
-    select_fields = [
-        "id",
-        "subject",
-        "from",
-        "receivedDateTime",
-        "isRead",
-        "hasAttachments",
-    ]
-    if include_body_preview:
-        select_fields.append("bodyPreview")
+    if fields is not None:
+        select_fields = _sanitize_select(fields)
+    else:
+        select_fields = [
+            f for f in _SUMMARY_SELECT if f != "bodyPreview" or include_body_preview
+        ]
+    params: dict[str, object] = {
+        "$top": min(limit, 50),
+        "$orderby": "receivedDateTime desc",
+        "$select": ",".join(select_fields),
+    }
+    if since is not None:
+        params["$filter"] = f"receivedDateTime ge {_validate_iso(since)}"
     items = client.paginate(
         f"/me/mailFolders/{folder_id}/messages",
-        params={
-            "$top": min(limit, 50),
-            "$orderby": "receivedDateTime desc",
-            "$select": ",".join(select_fields),
-        },
+        params=params,
         limit=limit,
     )
     return [_message_summary(item) for item in items]
@@ -211,7 +269,7 @@ def search_messages(account_id: str | None, query: str, limit: int = 10) -> list
         params={
             "$search": f'"{safe_query}"',
             "$top": min(limit, 50),
-            "$select": "id,subject,from,receivedDateTime,isRead,hasAttachments,bodyPreview",
+            "$select": ",".join(_SUMMARY_SELECT),
         },
         limit=limit,
     )
@@ -436,7 +494,7 @@ def _collect_matches(
     messages inspected), ``passes`` (pages fetched), ``exhausted`` (reached the
     end of the folder), and ``stop_reason``.
     """
-    select = "id,subject,from,receivedDateTime,isRead,hasAttachments,bodyPreview"
+    select = ",".join(_SUMMARY_SELECT)
 
     matches: list[MailMessageSummary] = []
     seen_ids: set[str] = set()

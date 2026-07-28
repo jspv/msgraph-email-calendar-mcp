@@ -111,6 +111,7 @@ class MailMessageSummary(BaseModel):
     sender_label: str | None = None
     is_read: bool = False
     has_attachments: bool = False
+    conversation_id: str | None = None
     body_preview: str | None = None
     summary: str | None = None
 
@@ -222,6 +223,7 @@ class PersonResult(BaseModel):
     """A person found via people search."""
     name: str | None = None
     email: str | None = None
+    job_title: str | None = None
 
 
 class MeetingTimeSuggestion(BaseModel):

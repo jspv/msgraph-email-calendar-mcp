@@ -8,7 +8,7 @@ A [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) server that g
 
 ### Mail
 
-- **Read** — list folders, messages, search (OData `$search`), attachments (inline base64 for files under 1.5 MB)
+- **Read** — list folders, messages (with `since` time filter and `conversation_id` threading), search (OData `$search`), attachments (inline base64 for files under 1.5 MB)
 - **Compose** — send, reply, reply-all, forward with dry-run preview by default
 - **Drafts** — create, update, attach files, then send when ready
 - **Organize** — mark read/unread, flag, categorize, move to folder, soft- or hard-delete
@@ -41,9 +41,9 @@ A [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) server that g
 | Auth | `start_auth` | Begin device-code flow (returns URL + code) |
 | Auth | `finish_auth` | Complete device-code flow after user approval |
 | Mail | `list_folders` | List mail folders with item/unread counts |
-| Mail | `list_messages` | List messages in a folder (limit 50) |
+| Mail | `list_messages` | List messages in a folder (limit 1000; `since` filter, `fields` override, `conversation_id` in results) |
 | Mail | `get_message` | Full message details including body |
-| Mail | `search_messages` | Search via OData `$search` (limit 50) |
+| Mail | `search_messages` | Search via OData `$search` (limit 1000; `conversation_id` in results) |
 | Mail | `list_attachments` | List attachment metadata for a message |
 | Mail | `get_attachments` | Download a single attachment |
 | Mail | `send_message` | Send a new email (dry-run by default) |
@@ -66,7 +66,7 @@ A [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) server that g
 | Calendar | `delete_event` | Delete or cancel an event |
 | Calendar | `respond_to_event` | Accept, decline, or tentatively accept |
 | Calendar | `check_availability` | Free/busy lookup or meeting time suggestions |
-| Contacts | `search_people` | Search contacts by name (limit 50) |
+| Contacts | `search_people` | Search contacts by name (limit 50; returns `job_title`) |
 
 ## Prerequisites
 
@@ -124,6 +124,7 @@ cp .env.example .env
 | `MICROSOFT_SCOPES` | `User.Read Mail.ReadWrite Mail.Send Calendars.ReadWrite Calendars.ReadWrite.Shared People.Read` | Space-separated delegated permissions |
 | `MICROSOFT_TOKEN_CACHE_PATH` | `.data/msal_token_cache.json` | Path to the local MSAL token cache |
 | `MAX_ATTACHMENT_INLINE_SIZE` | `1572864` | Max attachment size (bytes) for inline base64 (default 1.5 MB) |
+| `MAX_LIST_LIMIT` | `1000` | Max items returned by `list_messages` / `search_messages` |
 
 **Recommended tenant values:**
 - `organizations` — work/school accounts only (most common for enterprise)
