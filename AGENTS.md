@@ -85,9 +85,9 @@ python3 scripts/smoke_test.py list-events --limit 10
 | Tool | Key parameters | Notes |
 |------|---------------|-------|
 | `list_folders` | `account_id` | Returns folder IDs needed by other tools |
-| `list_messages` | `folder_id`, `limit` (≤50) | Newest first |
+| `list_messages` | `folder_id`, `limit` (≤1000), `since`, `fields` | Newest first; `since` filters server-side, `fields` overrides `$select`, results carry `conversation_id` |
 | `get_message` | `message_id` | Full body + recipients |
-| `search_messages` | `query`, `limit` (≤50) | Graph `$search` OData |
+| `search_messages` | `query`, `limit` (≤1000) | Graph `$search` OData; results carry `conversation_id` |
 | `mark_message_read` | `message_id`, `is_read` | Toggle read/unread |
 | `move_message` | `message_id`, `destination_folder` | Accepts well-known names: `inbox`, `drafts`, `sent`, `archive`, `deleted`, `junk` |
 | `delete_message` | `message_id`, `permanent=False` | Soft-delete by default |
@@ -112,7 +112,7 @@ These are load-bearing constraints — do not weaken them:
 - **Token cache permissions** (`auth.py`): Cache file is written `0600`, parent directory `0700`. Preserve these when modifying auth code.
 - **Soft-delete default**: `delete_message(permanent=False)` moves to Deleted Items. The `permanent=True` path is irreversible — keep the default.
 - **Bulk dry-run default**: `bulk_manage_messages(dry_run=True)` previews without acting. Always confirm intent before setting `dry_run=False`.
-- **Input caps**: `list_messages` and `search_messages` are capped at 50, `list_events` at 100 (in `tools.py`). `bulk_manage_messages` is **not** capped — it scans the whole folder by default; pass `limit` to bound it. Do not raise the list caps without understanding Graph API rate limits.
+- **Input caps**: `list_messages` and `search_messages` are capped at `max_list_limit` (default **1000**, override with `MAX_LIST_LIMIT`), `list_events` at 100 (in `tools.py`). `bulk_manage_messages` is **not** capped — it scans the whole folder by default; pass `limit` to bound it. Do not raise the list caps without understanding Graph API rate limits.
 
 ---
 

@@ -21,9 +21,9 @@
 
 ## Input bounds
 
-- `list_messages` limit: capped at `max_list_limit` (default 50).
+- `list_messages` limit: capped at `max_list_limit` (default 1000, override `MAX_LIST_LIMIT`). Optional `since` is validated as an ISO-8601 datetime before it is interpolated into `$filter` (parsing rejects OData injection); `fields` entries are validated against `[A-Za-z][A-Za-z0-9./]*` and `id` is forced in before use in `$select`.
 - `list_events` limit: capped at `max_event_limit` (default 100).
-- `search_messages` limit: capped at `max_list_limit` (default 50). Empty queries rejected.
+- `search_messages` limit: capped at `max_list_limit` (default 1000, override `MAX_LIST_LIMIT`). Empty queries rejected.
 - `bulk_manage_messages`: scans the whole folder by default; optional `limit` bounds the scan and is honored exactly (must be a positive integer). Paged internally at up to 1000 messages/request (Graph's max). An unfiltered whole-folder scan therefore reads every message in the folder — bounded by folder size, not a fixed cap.
 
 ## Write operations

@@ -20,7 +20,7 @@ def search_people(
         params={
             "$search": f'"{query.replace(chr(34), "")}"',
             "$top": min(limit, 50),
-            "$select": "displayName,scoredEmailAddresses",
+            "$select": "displayName,scoredEmailAddresses,jobTitle",
         },
     ) or {"value": []}
     results: list[PersonResult] = []
@@ -30,5 +30,6 @@ def search_people(
         results.append(PersonResult(
             name=item.get("displayName"),
             email=email,
+            job_title=item.get("jobTitle"),
         ))
     return results
