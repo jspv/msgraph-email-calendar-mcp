@@ -47,7 +47,7 @@ uv sync --dev                 # Also install dev/test dependencies
 Required `.env` keys:
 - `MICROSOFT_CLIENT_ID` — Azure app registration client ID (required)
 - `MICROSOFT_TENANT_ID` — defaults to `organizations`
-- `MICROSOFT_SCOPES` — space-separated delegated scopes
+- `MICROSOFT_SCOPES` — space-separated delegated scopes. Also gates **tool registration**: a tool is exposed only if a scope satisfying it is present (see `_requires_scope` in `tools.py`), so a read-only scope set never advertises write/send tools. Auth tools always register.
 - `MICROSOFT_TOKEN_CACHE_PATH` — defaults to `.data/msal_token_cache.json`
 
 ---
