@@ -1,5 +1,53 @@
 # Changelog
 
+## 0.3.0
+
+Fixes the two open calendar-timezone bugs, #9 and #10. Both reproduce exactly as
+their issues describe; both are in code paths a model exercises by default.
+
+### Breaking
+
+- **Calendar times without a UTC offset are now refused unless a zone is
+  available.** Previously `start_iso="2026-08-01T14:00:00"` was read as UTC, so
+  an Eastern caller who meant 2pm booked 10:00 EDT — silently, with invitations
+  already sent (#9). Three ways to be explicit:
+
+  | Input | Result |
+  |---|---|
+  | `2026-08-01T14:00:00-04:00` | converted to `18:00:00` UTC (unchanged) |
+  | `2026-08-01T14:00:00` + `timezone="America/New_York"` | handed to Graph unconverted with that zone |
+  | `2026-08-01T14:00:00`, nothing configured | `ValueError` naming all three ways out |
+
+  Passing the wall-clock time through with its zone, rather than flattening to
+  UTC, is also what keeps a recurring event at 14:00 local across a DST
+  boundary.
+
+  Affects `create_event`, `update_event`, and `check_availability`
+  (`find_meeting_times` / `get_schedule`).
+
+- **New `timezone` parameter** on those tools, and a new
+  `MSGRAPH_DEFAULT_TIMEZONE` environment variable as the server-side fallback.
+  IANA names are validated locally so a typo fails immediately instead of as a
+  Graph 400; Windows zone ids pass through.
+
+### Fixed
+
+- **All-day events with an offset-bearing start/end no longer emit a non-midnight
+  time** (#10). `2026-04-01T00:00:00-04:00` with `is_all_day=True` was being
+  converted to `04:00:00`, which Graph's documented contract rejects. All-day
+  times now keep the caller's calendar *date* and emit midnight, so
+  `2026-04-01T23:00:00-04:00` books April 1 rather than April 2.
+
+  This was the one case the pre-`fcc17cc` relabel got accidentally right, so the
+  general offset fix regressed it. `test_all_day_event` asserted only
+  `isAllDay is True` and could not have caught it; it now asserts the emitted
+  `start`/`end`.
+
+  The Graph-rejects-non-midnight claim comes from the documented contract, not
+  from a live call. `scripts/smoke_test.py check-all-day-event` prints both
+  payloads and, with `--apply`, POSTs the pre-fix one to settle whether Graph
+  400s, rounds, or accepts.
+
 ## 0.2.0
 
 Safety-first release. Three tool contracts change in ways that will break

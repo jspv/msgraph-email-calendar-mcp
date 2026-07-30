@@ -129,14 +129,14 @@ developer's real cached token against their real mailbox.
 | `list_calendars` | `user_id` | Pass `user_id` for another user's calendars |
 | `list_events` | `calendar_id`, `start_iso`, `end_iso`, `limit` (≤100), `user_id` | Default window: −1 day to +14 days |
 | `get_event` | `event_id`, `user_id` | Body, attendees, organizer |
-| `check_availability` | `emails`, `start_iso`, `end_iso`, `mode` | `free_busy` or `suggest` |
+| `check_availability` | `emails`, `start_iso`, `end_iso`, `mode`, `timezone` | `free_busy` or `suggest`. Same timezone rule as the write tools |
 
 ### Calendar — write (`Calendars.ReadWrite*`) — notifies attendees
 
 | Tool | Key parameters | Notes |
 |------|---------------|-------|
-| `create_event` | `subject`, `start_iso`, `end_iso`, `attendees`, `dry_run=True` | Graph emails invitations immediately, so dry-run is **on** by default. Preview costs no Graph call and echoes times converted to UTC |
-| `update_event` | `event_id`, fields…, `dry_run=True` | Updates notify attendees. Dry-run **on** by default; preview pairs current state with proposed changes |
+| `create_event` | `subject`, `start_iso`, `end_iso`, `attendees`, `timezone`, `dry_run=True` | Graph emails invitations immediately, so dry-run is **on** by default. An offsetless `start_iso`/`end_iso` needs `timezone` (or `MSGRAPH_DEFAULT_TIMEZONE`) or the call is refused |
+| `update_event` | `event_id`, fields…, `timezone`, `dry_run=True` | Updates notify attendees. Dry-run **on** by default; preview pairs current state with proposed changes. Same timezone rule as `create_event` |
 | `delete_event` | `event_id`, `cancel_message`, `dry_run=True` | Dry-run **on** by default; the preview names the event and states the consequence. With `cancel_message` → cancelled, attendees **notified**. Without → hard delete, **nobody told** |
 | `respond_to_event` | `event_id`, `response` | Always notifies the organizer. Not dry-run gated — responding again reverses it |
 
@@ -156,7 +156,9 @@ These are load-bearing constraints — do not weaken them:
 - **Path segment validation** (`graph.py`): User/message/event/calendar/folder IDs and `user_id` are validated against `[A-Za-z0-9_\-=+.]+` before being interpolated into URL paths. Never bypass this.
 - **Next-link validation** (`graph.py`): Pagination only follows `@odata.nextLink` URLs that are HTTPS on the Microsoft Graph domain. Do not relax this.
 - **OData parameter validation** (`mail.py`): `$select` fields via `_sanitize_select`, `$filter` datetimes via `_validate_iso`, `$search` quotes stripped. Any new OData parameter built from caller input needs equivalent validation.
-- **Datetime normalization** (`models.py:_parse_utc`): Caller datetimes are parsed to tz-aware UTC. Calendar writes must go through `calendar._graph_datetime` — Graph's `dateTime` field carries no offset, so an offset-bearing string paired with `timeZone: "UTC"` books the event at the wrong hour.
+- **Datetime normalization** (`models.py:_parse_utc`): Caller datetimes are parsed to tz-aware UTC. This reads a naive value as UTC, which is right for a mail `received_after` cutoff and **wrong** for a calendar write — do not reuse it there.
+- **Calendar datetimes** (`calendar.py:_graph_datetime`): every calendar time must go through this. Graph's `dateTime` carries no offset of its own, so the naive-string/zone-name pairing has to be built deliberately. Offset-bearing input is *converted* to UTC (relabelling books it at the wrong hour); offsetless input is paired with `timezone` / `MSGRAPH_DEFAULT_TIMEZONE` and handed over unconverted, which is what keeps recurring events right across DST; offsetless input with no zone available is **refused**, never assumed to be UTC. Do not add a UTC fallback — that silent assumption was issue #9.
+- **All-day events** (`calendar.py:_graph_datetime`, `all_day=True`): Graph requires midnight in the stated zone, so the calendar *date* must survive and the instant must not. Converting an all-day instant to UTC emits `04:00` and is issue #10. Tests must assert the emitted `dateTime`, not just `isAllDay`.
 - **Token cache permissions** (`auth.py`): Cache file `0600`, parent directory `0700`. Preserve these.
 - **Soft-delete default**: `delete_message(permanent=False)`. The `permanent=True` path is irreversible — keep the default.
 - **Dry-run defaults**: `bulk_manage_messages`, `send_message`, `reply_to_message`, `forward_message`, `create_event`, `update_event`, and `delete_event` all default to preview. Never flip a default to the acting value. `respond_to_event` is intentionally exempt — it is reversible by responding again.

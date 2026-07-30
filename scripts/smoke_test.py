@@ -127,6 +127,70 @@ def cmd_bulk_manage_messages(args: argparse.Namespace) -> int:
 
 
 
+def cmd_check_all_day_event(args: argparse.Namespace) -> int:
+    """Settle issue #10 against the live API: does Graph accept a non-midnight all-day event?
+
+    The fix in `_graph_datetime` follows Graph's *documented* contract -- an
+    all-day event must start and end at midnight in its stated zone -- but that
+    was never confirmed by a real call. This probe sends the pre-fix payload
+    (04:00, not midnight) and reports what actually happens.
+
+    Creates a real event on --apply. Without it, only the payloads are printed.
+    """
+    offset = args.offset
+    bad = {
+        "subject": args.subject,
+        "start": {"dateTime": f"{args.date}T04:00:00", "timeZone": "UTC"},
+        "end": {"dateTime": f"{args.end_date}T04:00:00", "timeZone": "UTC"},
+        "isAllDay": True,
+    }
+    print("Pre-fix payload (what the bug emitted for "
+          f"{args.date}T00:00:00{offset}):")
+    print_json(bad)
+    print()
+    print("Post-fix payload (what this repo now emits):")
+    print_json(
+        {
+            "subject": args.subject,
+            "start": calendar._graph_datetime(
+                f"{args.date}T00:00:00{offset}", "start_iso", all_day=True
+            ),
+            "end": calendar._graph_datetime(
+                f"{args.end_date}T00:00:00{offset}", "end_iso", all_day=True
+            ),
+            "isAllDay": True,
+        }
+    )
+    print()
+
+    if not args.apply:
+        print("Dry run. Re-run with --apply to POST the pre-fix payload and see "
+              "whether Graph 400s, silently rounds, or accepts it.")
+        return 0
+
+    from msgraph_mcp.graph import GraphClient
+
+    client = GraphClient(args.account_id)
+    try:
+        created = client.request("POST", "/me/calendar/events", json_body=bad)
+    except MsGraphMcpError as exc:
+        print(f"RESULT: Graph REJECTED the non-midnight all-day event -> {exc}")
+        print("=> Issue #10 confirmed; the midnight fix is required.")
+        return 0
+
+    print("RESULT: Graph ACCEPTED it. What it stored:")
+    print_json({k: created.get(k) for k in ("id", "start", "end", "isAllDay")})
+    stored = (created.get("start") or {}).get("dateTime", "")
+    if "T00:00:00" in stored:
+        print("=> Graph silently ROUNDED to midnight. The fix is still correct "
+              "(it makes the stored value predictable), but #10 is not a 400.")
+    else:
+        print("=> Graph stored it as sent. Issue #10's premise does not hold; "
+              "reconsider the fix.")
+    print(f"\nClean up: delete_event(event_id={created.get('id')!r})")
+    return 0
+
+
 def cmd_list_calendars(args: argparse.Namespace) -> int:
     items = calendar.list_calendars(account_id=args.account_id)
     print_json([item.model_dump() for item in items])
@@ -229,6 +293,22 @@ def build_parser() -> argparse.ArgumentParser:
         help="Token from a preceding dry run; required with --apply for delete/move",
     )
     bulk_manage.set_defaults(func=cmd_bulk_manage_messages)
+
+    all_day_probe = subparsers.add_parser(
+        "check-all-day-event",
+        help="Issue #10: does Graph reject a non-midnight all-day event?",
+    )
+    all_day_probe.add_argument("--account-id")
+    all_day_probe.add_argument("--subject", default="all-day probe (issue #10)")
+    all_day_probe.add_argument("--date", default="2027-04-01")
+    all_day_probe.add_argument("--end-date", default="2027-04-02")
+    all_day_probe.add_argument("--offset", default="-04:00")
+    all_day_probe.add_argument(
+        "--apply",
+        action="store_true",
+        help="Actually POST the pre-fix payload (creates a real event)",
+    )
+    all_day_probe.set_defaults(func=cmd_check_all_day_event)
 
     list_calendars = subparsers.add_parser("list-calendars")
     list_calendars.add_argument("--account-id")

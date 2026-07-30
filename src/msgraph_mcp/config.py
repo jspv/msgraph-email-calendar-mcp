@@ -34,6 +34,12 @@ class Settings:
     max_list_limit: int = 1000
     max_event_limit: int = 100
     max_attachment_inline_size: int = 1_572_864  # 1.5 MB
+    #: IANA or Windows zone name applied to calendar times written without a UTC
+    #: offset. Left unset, such times are *refused* rather than guessed at: this
+    #: is an MCP server, so the caller is usually a model turning "book me 2pm
+    #: Thursday" into a bare wall-clock string, and reading that as UTC books a
+    #: real meeting at the wrong hour with invitations already sent.
+    default_timezone: str | None = None
 
 
 
@@ -53,6 +59,7 @@ def load_settings() -> Settings:
         os.getenv("MAX_ATTACHMENT_INLINE_SIZE", "1572864")
     )
     max_list_limit = int(os.getenv("MAX_LIST_LIMIT", "1000"))
+    default_timezone = os.getenv("MSGRAPH_DEFAULT_TIMEZONE", "").strip() or None
     return Settings(
         client_id=client_id,
         tenant_id=tenant_id,
@@ -60,6 +67,7 @@ def load_settings() -> Settings:
         token_cache_path=token_cache_path,
         max_attachment_inline_size=max_attachment_inline_size,
         max_list_limit=max_list_limit,
+        default_timezone=default_timezone,
     )
 
 
