@@ -488,6 +488,7 @@ def create_event(
     calendar_id: str | None = None,
     account_id: str | None = None,
     user_id: str | None = None,
+    timezone: str | None = None,
     dry_run: bool = True,
 ) -> dict:
     """Create a calendar event. Dry-run by default. Pass user_id for shared calendars.
@@ -496,12 +497,17 @@ def create_event(
     there is no undo, so this previews by default. The preview costs no Graph
     call and echoes the exact body that would be sent, including times converted
     to UTC -- check those before setting ``dry_run=False``.
+
+    Times without a UTC offset need a zone: pass ``timezone`` (IANA, e.g.
+    ``"America/New_York"``) or set ``MSGRAPH_DEFAULT_TIMEZONE`` on the server.
+    Otherwise the call is refused rather than guessing UTC, which would book the
+    event at the wrong hour. A time that already carries an offset is used as-is.
     """
     return calendar.create_event(
         account_id, subject=subject, start_iso=start_iso, end_iso=end_iso,
         attendees=attendees, body=body, location=location,
         is_all_day=is_all_day, calendar_id=calendar_id, user_id=user_id,
-        dry_run=dry_run,
+        timezone=timezone, dry_run=dry_run,
     )
 
 
@@ -517,18 +523,24 @@ def update_event(
     is_all_day: bool | None = None,
     account_id: str | None = None,
     user_id: str | None = None,
+    timezone: str | None = None,
     dry_run: bool = True,
 ) -> dict:
     """Update a calendar event. Dry-run by default. Pass user_id for shared calendars.
 
     Edits notify attendees. The preview spends one read to show the event's
     current state alongside the proposed changes.
+
+    Times without a UTC offset need a zone: pass ``timezone`` (IANA, e.g.
+    ``"America/New_York"``) or set ``MSGRAPH_DEFAULT_TIMEZONE`` on the server.
+    Otherwise the call is refused rather than guessing UTC, which would book the
+    event at the wrong hour. A time that already carries an offset is used as-is.
     """
     return calendar.update_event(
         account_id, event_id=event_id, subject=subject,
         start_iso=start_iso, end_iso=end_iso, attendees=attendees,
         body=body, location=location, is_all_day=is_all_day, user_id=user_id,
-        dry_run=dry_run,
+        timezone=timezone, dry_run=dry_run,
     )
 
 
@@ -579,20 +591,26 @@ def check_availability(
     mode: str = "free_busy",
     duration_minutes: int = 60,
     account_id: str | None = None,
+    timezone: str | None = None,
 ) -> list[dict]:
-    """Check calendar availability. mode='free_busy': get free/busy schedule. mode='suggest': suggest meeting times."""
+    """Check calendar availability. mode='free_busy': get free/busy schedule. mode='suggest': suggest meeting times.
+
+    Times without a UTC offset need a zone: pass ``timezone`` (IANA, e.g.
+    ``"America/New_York"``) or set ``MSGRAPH_DEFAULT_TIMEZONE`` on the server.
+    """
     if mode == "suggest":
         return [
             s.model_dump()
             for s in calendar.find_meeting_times(
                 account_id, attendees=emails, duration_minutes=duration_minutes,
-                start_iso=start_iso, end_iso=end_iso,
+                start_iso=start_iso, end_iso=end_iso, timezone=timezone,
             )
         ]
     return [
         s.model_dump()
         for s in calendar.get_schedule(
             account_id, emails=emails, start_iso=start_iso, end_iso=end_iso,
+            timezone=timezone,
         )
     ]
 

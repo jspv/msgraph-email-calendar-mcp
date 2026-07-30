@@ -60,11 +60,11 @@ A [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) server that g
 | Calendar | `list_calendars` | List calendars (own or shared via `user_id`) |
 | Calendar | `list_events` | List events in a time range (limit 100) |
 | Calendar | `get_event` | Full event details with attendees |
-| Calendar | `create_event` | Create a calendar event (dry-run by default) |
-| Calendar | `update_event` | Update an existing event (dry-run by default) |
+| Calendar | `create_event` | Create a calendar event (dry-run by default; needs a `timezone` for offsetless times) |
+| Calendar | `update_event` | Update an existing event (dry-run by default; needs a `timezone` for offsetless times) |
 | Calendar | `delete_event` | Delete or cancel an event (dry-run by default) |
 | Calendar | `respond_to_event` | Accept, decline, or tentatively accept |
-| Calendar | `check_availability` | Free/busy lookup or meeting time suggestions |
+| Calendar | `check_availability` | Free/busy lookup or meeting time suggestions (needs a `timezone` for offsetless times) |
 | Contacts | `search_people` | Search contacts by name (limit 50; returns `job_title`) |
 
 ## Prerequisites
@@ -131,6 +131,7 @@ cp .env.example .env
 | `MICROSOFT_TOKEN_CACHE_PATH` | `.data/msal_token_cache.json` | Path to the local MSAL token cache |
 | `MAX_ATTACHMENT_INLINE_SIZE` | `1572864` | Max attachment size (bytes) for inline base64 (default 1.5 MB) |
 | `MAX_LIST_LIMIT` | `1000` | Max items returned by `list_messages` / `search_messages` |
+| `MSGRAPH_DEFAULT_TIMEZONE` | *(unset)* | IANA or Windows zone applied to calendar times written without a UTC offset. Unset → such times are refused, not guessed |
 
 **Recommended tenant values:**
 - `organizations` — work/school accounts only (most common for enterprise)
@@ -278,6 +279,27 @@ Write operations default to safe behavior:
 `respond_to_event` is deliberately **not** gated — accepting or declining is
 reversible by responding again, so a confirmation step would be friction with no
 safety payoff.
+
+### Calendar times and timezones
+
+Graph's `dateTimeTimeZone` pairs a *naive* wall-clock string with a separate zone
+name, so how a time is written matters:
+
+| Input | Sent to Graph |
+|---|---|
+| `2026-08-01T14:00:00-04:00` | `{"dateTime": "2026-08-01T18:00:00", "timeZone": "UTC"}` — the instant is unambiguous, so it is converted |
+| `2026-08-01T14:00:00` + `timezone="America/New_York"` | `{"dateTime": "2026-08-01T14:00:00", "timeZone": "America/New_York"}` — handed to Graph unconverted, which keeps recurring events correct across DST |
+| `2026-08-01T14:00:00`, no zone anywhere | **Refused** |
+
+That last row is deliberate. Reading a bare local time as UTC is how a 2pm
+Eastern meeting silently becomes 10:00 EDT, with invitations already sent — and
+on an MCP server the caller is usually a model turning "book me 2pm Thursday"
+into exactly that string. Set `MSGRAPH_DEFAULT_TIMEZONE` if you want a
+server-side default instead of passing `timezone` per call.
+
+**All-day events** are a separate contract: Graph wants midnight in the stated
+zone, so the calendar *date* is preserved and the instant is not.
+`2026-04-01T23:00:00-04:00` with `is_all_day=True` books April 1, not April 2.
 
 ### Confirming a bulk delete or move
 

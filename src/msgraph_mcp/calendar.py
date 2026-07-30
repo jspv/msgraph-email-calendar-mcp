@@ -8,7 +8,9 @@ the ``Calendars.ReadWrite.Shared`` scope.
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from . import config
 from .graph import GraphClient, validate_path_segment
 from .models import (
     CalendarEventDetail,
@@ -25,17 +27,98 @@ from .models import (
 )
 
 
-def _graph_datetime(value: str, label: str) -> dict[str, str]:
-    """Build a Graph ``dateTimeTimeZone`` object in real UTC.
+_GRAPH_DT_FORMAT = "%Y-%m-%dT%H:%M:%S"
 
-    ``dateTime`` carries no offset of its own, so an offset-bearing input must
-    be *converted* rather than relabelled -- pairing ``14:00:00-07:00`` with
-    ``timeZone: "UTC"`` would otherwise book the event seven hours early. A
-    value with no offset is taken as UTC.
+
+def _validate_timezone(name: str, label: str) -> str:
+    """Reject a mistyped IANA zone locally; let Windows zone ids through.
+
+    Graph accepts both IANA (``America/New_York``) and Windows (``Eastern
+    Standard Time``) names, and only the former can be checked with
+    :mod:`zoneinfo`. A name containing ``/`` is unambiguously IANA-style, so a
+    typo there fails here rather than as a Graph 400 a round-trip later.
     """
+    if "/" in name:
+        try:
+            ZoneInfo(name)
+        except (ZoneInfoNotFoundError, ValueError) as exc:
+            raise ValueError(
+                f"Unknown timezone {name!r} for {label}: expected an IANA name "
+                f"such as 'America/New_York'."
+            ) from exc
+    return name
+
+
+def _parse_naive_or_aware(value: str, label: str) -> datetime:
+    """Parse an ISO-8601 string *without* forcing a timezone onto it.
+
+    ``models._parse_utc`` deliberately reads a naive value as UTC, which is the
+    right default for a mail ``received_after`` cutoff. Calendar writes must be
+    able to tell the two cases apart, so they parse here instead.
+    """
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (ValueError, AttributeError) as exc:
+        raise ValueError(
+            f"{label} must be an ISO-8601 datetime, got {value!r}"
+        ) from exc
+
+
+def _graph_datetime(
+    value: str,
+    label: str,
+    *,
+    timezone_name: str | None = None,
+    all_day: bool = False,
+) -> dict[str, str]:
+    """Build a Graph ``dateTimeTimeZone`` object without relocating the caller.
+
+    Graph pairs a *naive* wall-clock string with a separate zone name, so the
+    pairing has to be built deliberately. Three inputs, three answers:
+
+    * **Offset-bearing** -- the instant is unambiguous, so convert it to real
+      UTC. Relabelling ``14:00:00-07:00`` as ``timeZone: "UTC"`` would book the
+      event seven hours early.
+    * **Offsetless with a known zone** -- hand the wall-clock time to Graph
+      alongside that zone rather than converting. Graph resolves it, and a
+      recurring event stays at 14:00 local across a DST boundary, which a
+      one-shot UTC conversion cannot do.
+    * **Offsetless with no zone** -- refuse. Reading it as UTC is how a 2pm
+      Eastern meeting silently becomes 10:00 EDT, and on this server the caller
+      is usually a model emitting a bare local time as its normal output.
+
+    *all_day* is a different contract: Graph wants midnight in the stated zone,
+    so the calendar **date** must survive and the instant must not. The date is
+    taken as the caller wrote it -- ``2026-04-01T23:00:00-04:00`` means April 1
+    even though it is April 2 in UTC -- and no zone is required, because a
+    calendar date is unambiguous without one.
+    """
+    parsed = _parse_naive_or_aware(value, label)
+
+    if all_day:
+        zone = timezone_name or config.settings.default_timezone or "UTC"
+        return {
+            "dateTime": parsed.date().strftime("%Y-%m-%d") + "T00:00:00",
+            "timeZone": _validate_timezone(zone, label),
+        }
+
+    if parsed.tzinfo is not None:
+        return {
+            "dateTime": parsed.astimezone(timezone.utc).strftime(_GRAPH_DT_FORMAT),
+            "timeZone": "UTC",
+        }
+
+    zone = timezone_name or config.settings.default_timezone
+    if not zone:
+        raise ValueError(
+            f"{label} has no UTC offset and no timezone was given, so the intended "
+            f"time is ambiguous. Pass timezone=\"America/New_York\", include an "
+            f"offset (e.g. {value}-04:00), or set MSGRAPH_DEFAULT_TIMEZONE on the "
+            f"server."
+        )
     return {
-        "dateTime": _parse_utc(value, label).strftime("%Y-%m-%dT%H:%M:%S"),
-        "timeZone": "UTC",
+        "dateTime": parsed.strftime(_GRAPH_DT_FORMAT),
+        "timeZone": _validate_timezone(zone, label),
     }
 
 
@@ -178,6 +261,7 @@ def create_event(
     is_all_day: bool = False,
     calendar_id: str | None = None,
     user_id: str | None = None,
+    timezone: str | None = None,
     dry_run: bool = True,
 ) -> dict:
     """Create a new calendar event.  Pass *user_id* for shared calendars.
@@ -191,8 +275,12 @@ def create_event(
     base = _base_path(user_id)
     event_body: dict = {
         "subject": subject,
-        "start": _graph_datetime(start_iso, "start_iso"),
-        "end": _graph_datetime(end_iso, "end_iso"),
+        "start": _graph_datetime(
+            start_iso, "start_iso", timezone_name=timezone, all_day=is_all_day
+        ),
+        "end": _graph_datetime(
+            end_iso, "end_iso", timezone_name=timezone, all_day=is_all_day
+        ),
         "isAllDay": is_all_day,
     }
     if attendees:
@@ -253,6 +341,7 @@ def update_event(
     location: str | None = None,
     is_all_day: bool | None = None,
     user_id: str | None = None,
+    timezone: str | None = None,
     dry_run: bool = True,
 ) -> dict:
     """Update an existing calendar event.  Pass *user_id* for shared calendars.
@@ -268,9 +357,13 @@ def update_event(
     if subject is not None:
         update["subject"] = subject
     if start_iso is not None:
-        update["start"] = _graph_datetime(start_iso, "start_iso")
+        update["start"] = _graph_datetime(
+            start_iso, "start_iso", timezone_name=timezone, all_day=bool(is_all_day)
+        )
     if end_iso is not None:
-        update["end"] = _graph_datetime(end_iso, "end_iso")
+        update["end"] = _graph_datetime(
+            end_iso, "end_iso", timezone_name=timezone, all_day=bool(is_all_day)
+        )
     if attendees is not None:
         update["attendees"] = [
             {"emailAddress": {"address": email}, "type": "required"}
@@ -474,8 +567,13 @@ def find_meeting_times(
     duration_minutes: int = 60,
     start_iso: str | None = None,
     end_iso: str | None = None,
+    timezone: str | None = None,
 ) -> list[MeetingTimeSuggestion]:
-    """Suggest available meeting times for a set of attendees."""
+    """Suggest available meeting times for a set of attendees.
+
+    *start_iso* / *end_iso* follow the same rule as the write paths: an
+    offsetless time needs either *timezone* or ``MSGRAPH_DEFAULT_TIMEZONE``.
+    """
     client = GraphClient(account_id)
     body: dict = {
         "attendees": [
@@ -488,8 +586,10 @@ def find_meeting_times(
         body["timeConstraint"] = {
             "timeslots": [
                 {
-                    "start": _graph_datetime(start_iso, "start_iso"),
-                    "end": _graph_datetime(end_iso, "end_iso"),
+                    "start": _graph_datetime(
+                        start_iso, "start_iso", timezone_name=timezone
+                    ),
+                    "end": _graph_datetime(end_iso, "end_iso", timezone_name=timezone),
                 }
             ]
         }
@@ -513,13 +613,18 @@ def get_schedule(
     emails: list[str],
     start_iso: str,
     end_iso: str,
+    timezone: str | None = None,
 ) -> list[ScheduleEntry]:
-    """Get free/busy information for one or more users."""
+    """Get free/busy information for one or more users.
+
+    *start_iso* / *end_iso* follow the same rule as the write paths: an
+    offsetless time needs either *timezone* or ``MSGRAPH_DEFAULT_TIMEZONE``.
+    """
     client = GraphClient(account_id)
     body = {
         "schedules": emails,
-        "startTime": _graph_datetime(start_iso, "start_iso"),
-        "endTime": _graph_datetime(end_iso, "end_iso"),
+        "startTime": _graph_datetime(start_iso, "start_iso", timezone_name=timezone),
+        "endTime": _graph_datetime(end_iso, "end_iso", timezone_name=timezone),
     }
     result = client.request("POST", "/me/calendar/getSchedule", json_body=body) or {}
     items = result.get("value") or []

@@ -30,6 +30,7 @@ class TestCreateEvent:
             subject="Team Standup",
             start_iso="2026-04-01T09:00:00",
             end_iso="2026-04-01T09:30:00",
+            timezone="UTC",
             dry_run=False,
         )
         assert result["ok"] is True
@@ -50,6 +51,7 @@ class TestCreateEvent:
             start_iso="2026-04-01T09:00:00",
             end_iso="2026-04-01T10:00:00",
             attendees=["alice@example.com", "bob@example.com"],
+            timezone="UTC",
             dry_run=False,
         )
         body = client.request.call_args[1]["json_body"]
@@ -69,6 +71,7 @@ class TestCreateEvent:
             start_iso="2026-04-01T09:00:00",
             end_iso="2026-04-01T10:00:00",
             calendar_id="cal-123",
+            timezone="UTC",
             dry_run=False,
         )
         call_args = client.request.call_args
@@ -91,6 +94,10 @@ class TestCreateEvent:
         )
         body = client.request.call_args[1]["json_body"]
         assert body["isAllDay"] is True
+        # Issue #10: asserting only the flag let the payload drift unnoticed.
+        # Graph requires midnight in the stated zone for an all-day event.
+        assert body["start"] == {"dateTime": "2026-04-01T00:00:00", "timeZone": "UTC"}
+        assert body["end"] == {"dateTime": "2026-04-02T00:00:00", "timeZone": "UTC"}
 
 
 class TestUpdateEvent:
@@ -123,6 +130,7 @@ class TestUpdateEvent:
             event_id="event-1",
             start_iso="2026-04-01T10:00:00",
             end_iso="2026-04-01T11:00:00",
+            timezone="UTC",
             dry_run=False,
         )
         body = client.request.call_args[1]["json_body"]
@@ -247,6 +255,7 @@ class TestGetSchedule:
             emails=["alice@example.com"],
             start_iso="2026-04-01T00:00:00",
             end_iso="2026-04-01T23:59:59",
+            timezone="UTC",
         )
         assert len(result) == 1
         assert result[0].email == "alice@example.com"
@@ -281,7 +290,9 @@ class TestEventTimeNormalisation:
         assert body["end"] == {"dateTime": "2026-07-30T21:30:00", "timeZone": "UTC"}
 
     @patch("msgraph_mcp.calendar.GraphClient")
-    def test_create_reads_naive_times_as_utc_unchanged(self, MockClient):
+    def test_create_with_an_explicit_zone_keeps_the_wall_clock_time(self, MockClient):
+        # Superseded the old "naive is read as UTC" test: issue #9 established
+        # that guessing UTC for a bare local time is the bug, not the contract.
         client = MockClient.return_value
         client.request.return_value = {"id": "e2"}
 
@@ -290,6 +301,7 @@ class TestEventTimeNormalisation:
             subject="Standup",
             start_iso="2026-04-01T09:00:00",
             end_iso="2026-04-01T09:30:00",
+            timezone="UTC",
             dry_run=False,
         )
 
@@ -366,6 +378,7 @@ class TestCreateEventDryRun:
             subject="Standup",
             start_iso="2026-04-01T09:00:00",
             end_iso="2026-04-01T09:30:00",
+            timezone="UTC",
         )
         assert result["dry_run"] is True
         # The body is fully known client-side, so unlike mail's draft-based
@@ -380,6 +393,7 @@ class TestCreateEventDryRun:
             start_iso="2026-04-01T09:00:00",
             end_iso="2026-04-01T09:30:00",
             attendees=["alice@example.com"],
+            timezone="UTC",
         )
         event = result["preview"]["event"]
         assert event["subject"] == "Standup"
@@ -406,6 +420,7 @@ class TestCreateEventDryRun:
             start_iso="2026-04-01T09:00:00",
             end_iso="2026-04-01T09:30:00",
             calendar_id="cal-123",
+            timezone="UTC",
         )
         assert "calendars/cal-123/events" in result["preview"]["path"]
 
@@ -416,6 +431,7 @@ class TestCreateEventDryRun:
             subject="Standup",
             start_iso="2026-04-01T09:00:00",
             end_iso="2026-04-01T09:30:00",
+            timezone="UTC",
         )
         assert "NOT created" in result["message"]
 
@@ -428,6 +444,7 @@ class TestCreateEventDryRun:
             subject="Standup",
             start_iso="2026-04-01T09:00:00",
             end_iso="2026-04-01T09:30:00",
+            timezone="UTC",
             dry_run=False,
         )
         assert result["dry_run"] is False
