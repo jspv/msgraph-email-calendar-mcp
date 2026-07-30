@@ -1,5 +1,57 @@
 # Changelog
 
+## 0.4.0
+
+Closes #4 and #11. Both are about list-level results carrying enough to act on
+without a follow-up call per row.
+
+### Added
+
+- **Date windows are applied by Graph** (#4). `bulk_manage_messages` gains
+  `received_before`, and both bounds now travel in the `$filter` instead of being
+  compared after the fetch. A date-scoped query costs O(window) rather than
+  O(folder) — on a 50k-message mailbox, "what did this sender send me last March"
+  went from paging all 50k rows to reading one slice.
+
+  The upper bound needed no new machinery: paging already anchors on
+  `receivedDateTime le`, so `received_before` is simply the initial cursor and
+  the scan starts inside the window rather than at the newest message.
+
+  `list_messages` gains the matching `until` to pair with its existing `since`.
+
+  Note on #4's original framing: old mail was not *unreachable* — `0c4f542` (#6)
+  had already made a full-folder scan the default. It was expensive. That is a
+  narrower claim than the issue made, but a sufficient one, and the issue has
+  been retitled accordingly.
+
+- **Recipients at list level** (#11). `MailMessageSummary` gains
+  `to_recipients`, `to_recipient_labels`, `cc_recipients`, and
+  `cc_recipient_labels`, and `_SUMMARY_SELECT` requests `toRecipients` /
+  `ccRecipients` for **every** folder.
+
+  Unconditional is deliberate. Fetching them only for Sent Items would skip the
+  Inbox, which is exactly where the two motivating signals live: which alias a
+  message was delivered to when the owner uses a per-vendor address, and whether
+  the owner was addressed directly or merely copied. That costs two extra arrays
+  per row on a whole-folder scan; if it ever hurts, the answer is a leaner
+  projection, not dropping them on Inbox.
+
+  Recipients also appear in the generated `summary` string, so a model reading a
+  Sent Items list can tell the rows apart — previously every row showed the
+  mailbox owner as sender and nothing else distinguishing.
+
+- **`recipient_contains`** on `bulk_manage_messages`, matching across both To and
+  Cc. This is what makes "everything sent to my *vendor* alias" one call.
+
+### Changed
+
+- **New `stop_reason`: `window_exhausted`.** Reported instead of
+  `folder_exhausted` when a date bound was given. The scan covered all of what
+  was asked but not all of the folder, and reporting the latter would overclaim.
+- An inverted window (`received_after` later than `received_before`) is rejected
+  up front rather than silently returning zero matches, which would read as
+  "nothing there".
+
 ## 0.3.0
 
 Fixes the two open calendar-timezone bugs, #9 and #10. Both reproduce exactly as

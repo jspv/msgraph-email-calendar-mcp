@@ -41,7 +41,7 @@ A [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) server that g
 | Auth | `start_auth` | Begin device-code flow (returns URL + code) |
 | Auth | `finish_auth` | Complete device-code flow after user approval |
 | Mail | `list_folders` | List mail folders with item/unread counts |
-| Mail | `list_messages` | List messages in a folder (limit 1000; `since` filter, `fields` override, `conversation_id` in results) |
+| Mail | `list_messages` | List messages in a folder (limit 1000; `since`/`until` window, `fields` override, `conversation_id` and recipients in results) |
 | Mail | `get_message` | Full message details including body |
 | Mail | `search_messages` | Search via OData `$search` (limit 1000; `conversation_id` in results) |
 | Mail | `get_attachments` | List attachment metadata, or download one by `attachment_id` |
@@ -54,7 +54,7 @@ A [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) server that g
 | Mail | `update_message` | Mark read/unread, flag, or categorize |
 | Mail | `move_message` | Move to a folder (supports well-known names) |
 | Mail | `delete_message` | Soft-delete or permanently delete |
-| Mail | `bulk_manage_messages` | Bulk filtered actions with dry-run (scans whole folder by default; `delete`/`move` need a `confirm_token`) |
+| Mail | `bulk_manage_messages` | Bulk filtered actions with dry-run (whole folder by default; `received_after`/`received_before` bound it server-side; `recipient_contains` matches To+Cc; `delete`/`move` need a `confirm_token`) |
 | Mail | `create_folder` | Create a new mail folder |
 | Mail | `list_aliases` | List email aliases / send-from addresses |
 | Calendar | `list_calendars` | List calendars (own or shared via `user_id`) |
@@ -341,8 +341,25 @@ never silently clamped. The response reports coverage explicitly:
 | `matched` | How many passed the filters |
 | `total_in_folder` | Folder size, as a scale anchor |
 | `truncated` | `False` only when the scan reached the folder end (count is a true total) |
-| `stop_reason` | `folder_exhausted` \| `scan_limit_reached` \| `cursor_stalled` |
+| `stop_reason` | `folder_exhausted` \| `window_exhausted` \| `scan_limit_reached` \| `cursor_stalled` |
 | `acted` / `already_gone` / `failed` | Per-message outcomes of a live (non-dry-run) run |
+
+#### Date windows
+
+`received_after` and `received_before` are applied by **Graph**, not after the
+fetch, so a date-scoped query reads only its window. This is what makes old mail
+cheap to reach: without a bound, "what did this sender send me last March" pages
+the entire folder to match a handful of rows. On a 50k-message mailbox that is
+the difference between ~50 round-trips and one.
+
+The upper bound needs no extra machinery — paging already anchors on
+`receivedDateTime le`, so `received_before` *is* the starting cursor and the scan
+begins inside the window rather than at the newest message.
+
+When either bound is given, `stop_reason` is `window_exhausted` rather than
+`folder_exhausted`. That distinction is deliberate: the scan covered all of what
+you asked for, but not all of the folder, and reporting the latter would
+overclaim.
 
 The mailbox is live, so counts are a point-in-time snapshot: re-running may
 legitimately see a different set. Collection and action are separate phases —

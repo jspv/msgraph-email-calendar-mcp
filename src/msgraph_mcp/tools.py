@@ -157,20 +157,24 @@ def list_messages(
     folder: str = "inbox",
     limit: int = 10,
     since: str | None = None,
+    until: str | None = None,
     fields: list[str] | None = None,
 ) -> list[dict]:
     """List recent mail messages from a folder, newest first.
 
-    Pass `since` (ISO-8601) to filter server-side to messages received at or
-    after that time. Pass `fields` to override the selected columns (`id` is
-    always included) for a leaner or extended payload. Each summary includes
-    `conversation_id` for threading without a follow-up fetch.
+    Pass `since` and/or `until` (ISO-8601) to bound the window server-side;
+    together they read one date slice instead of the newest N messages, which is
+    how you reach older mail without paging everything above it. Pass `fields`
+    to override the selected columns (`id` is always included) for a leaner or
+    extended payload. Each summary includes `conversation_id` for threading, and
+    `to_recipient_labels` / `cc_recipient_labels` so Sent Items rows are
+    distinguishable and Inbox rows show which alias was addressed.
     """
     bounded_limit = max(1, min(limit, settings.max_list_limit))
     return [
         item.model_dump()
         for item in mail.list_messages(
-            account_id, folder, bounded_limit, since=since, fields=fields
+            account_id, folder, bounded_limit, since=since, until=until, fields=fields
         )
     ]
 
@@ -234,7 +238,9 @@ def bulk_manage_messages(
     folder: str = "inbox",
     sender_contains: str | None = None,
     subject_contains: str | None = None,
+    recipient_contains: str | None = None,
     received_after: str | None = None,
+    received_before: str | None = None,
     unread_only: bool = False,
     action: str = "delete",
     destination: str | None = None,
@@ -263,6 +269,17 @@ def bulk_manage_messages(
     the mailbox changed in between the live run refuses and hands back a fresh
     token rather than acting on a set you never saw. ``mark_read`` /
     ``mark_unread`` are reversible and need no token.
+
+    ``received_after`` / ``received_before`` are applied by Graph rather than
+    after the fetch, so a date-scoped query reads only the window. Use them to
+    reach old mail cheaply: without a bound, "what did this sender send me last
+    March" pages the entire folder to match a handful of rows. When either is
+    given, ``stop_reason`` is ``window_exhausted`` rather than
+    ``folder_exhausted`` -- complete coverage of what was asked, not of the
+    folder.
+
+    ``recipient_contains`` matches across both To and Cc. It is what makes
+    "everything sent to my <vendor> alias" a single call.
     """
     if limit is not None and limit < 1:
         raise ValueError("limit must be a positive integer, or None to scan the whole folder")
@@ -271,7 +288,9 @@ def bulk_manage_messages(
         folder=folder,
         sender_contains=sender_contains,
         subject_contains=subject_contains,
+        recipient_contains=recipient_contains,
         received_after=received_after,
+        received_before=received_before,
         unread_only=unread_only,
         action=action,
         destination=destination,

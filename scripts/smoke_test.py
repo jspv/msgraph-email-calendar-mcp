@@ -114,7 +114,9 @@ def cmd_bulk_manage_messages(args: argparse.Namespace) -> int:
             folder=args.folder,
             sender_contains=args.sender_contains,
             subject_contains=args.subject_contains,
+            recipient_contains=args.recipient_contains,
             received_after=args.received_after,
+            received_before=args.received_before,
             unread_only=args.unread_only,
             action=args.action,
             destination=args.destination,
@@ -280,6 +282,13 @@ def build_parser() -> argparse.ArgumentParser:
     bulk_manage.add_argument("--sender-contains")
     bulk_manage.add_argument("--subject-contains")
     bulk_manage.add_argument("--received-after")
+    bulk_manage.add_argument(
+        "--received-before",
+        help="Upper date bound; with --received-after this reads one window server-side",
+    )
+    bulk_manage.add_argument(
+        "--recipient-contains", help="Match across To and Cc (e.g. a vendor alias)"
+    )
     bulk_manage.add_argument("--unread-only", action="store_true")
     bulk_manage.add_argument("--action", default="delete", choices=["delete", "move", "mark_read", "mark_unread"])
     bulk_manage.add_argument("--destination")

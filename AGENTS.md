@@ -96,7 +96,7 @@ developer's real cached token against their real mailbox.
 | Tool | Key parameters | Notes |
 |------|---------------|-------|
 | `list_folders` | `parent_folder_id` | Returns folder IDs; pass a parent to list subfolders |
-| `list_messages` | `folder`, `limit` (≤1000), `since`, `fields` | Newest first; `since` filters server-side, `fields` overrides `$select`, results carry `conversation_id` |
+| `list_messages` | `folder`, `limit` (≤1000), `since`, `until`, `fields` | Newest first; `since`/`until` filter server-side (use both to read one date slice), `fields` overrides `$select`, results carry `conversation_id`, `to_recipient_labels`, `cc_recipient_labels` |
 | `get_message` | `message_id` | Full body + recipients |
 | `search_messages` | `query`, `limit` (≤1000) | Graph `$search` OData |
 | `get_attachments` | `message_id`, `attachment_id` | Without `attachment_id`: list metadata. With: download (base64 under 1.5 MB) |
@@ -108,7 +108,7 @@ developer's real cached token against their real mailbox.
 | `update_message` | `is_read`, `flag_status`, `categories` | Only supplied fields change |
 | `move_message` | `message_id`, `destination` | Well-known names: `inbox`, `drafts`, `sent`, `archive`, `deleted`, `junk` |
 | `delete_message` | `message_id`, `permanent=False` | Soft-delete by default |
-| `bulk_manage_messages` | filters + `action`, optional `limit`, `dry_run=True`, `confirm_token` | Dry-run **on** by default. `delete`/`move` are two-step: preview, then re-call with the `confirm_token` the preview returned. Scans the whole folder unless `limit` is given. Check `truncated`/`stop_reason` — `truncated=False` means the count is a true folder total |
+| `bulk_manage_messages` | filters + `action`, `received_after`/`received_before`, `recipient_contains`, optional `limit`, `dry_run=True`, `confirm_token` | Dry-run **on** by default. `delete`/`move` are two-step: preview, then re-call with the `confirm_token` the preview returned. Scans the whole folder unless `limit` or a date bound is given — **prefer a date window on a large folder**, it is applied server-side. Check `truncated`/`stop_reason`; `window_exhausted` means the window was fully covered, not the folder |
 | `create_draft` | `to`, `subject`, `body` | Saved to Drafts, not sent |
 | `add_attachment_to_draft` | `message_id`, `name`, `content_base64` | — |
 | `create_folder` | `name`, `parent_folder_id` | — |
@@ -163,7 +163,8 @@ These are load-bearing constraints — do not weaken them:
 - **Soft-delete default**: `delete_message(permanent=False)`. The `permanent=True` path is irreversible — keep the default.
 - **Dry-run defaults**: `bulk_manage_messages`, `send_message`, `reply_to_message`, `forward_message`, `create_event`, `update_event`, and `delete_event` all default to preview. Never flip a default to the acting value. `respond_to_event` is intentionally exempt — it is reversible by responding again.
 - **Dry-run drafts are cleaned up in `finally`** (`mail.py`): the preview path creates a real draft. Keep the deletion unconditional.
-- **Input caps**: `list_messages`/`search_messages` at `max_list_limit` (default 1000), `list_events` at 100. `bulk_manage_messages` is **not** capped — it scans the whole folder by default; pass `limit` to bound it.
+- **Input caps**: `list_messages`/`search_messages` at `max_list_limit` (default 1000), `list_events` at 100. `bulk_manage_messages` is **not** capped — it scans the whole folder by default; pass `limit` to bound the scan or `received_after`/`received_before` to bound the window (the latter is server-side and far cheaper).
+- **Date bounds belong in the `$filter`** (`mail.py:_collect_matches`): `received_after`/`received_before` are sent to Graph, not applied after the fetch, which is what keeps a date-scoped query O(window) instead of O(folder). The `ge` clause must be re-applied on every page — the cursor rewrites the `le` half each time, so dropping it would let page two scan past the window.
 - **Scope gating** (`tools.py`): `_requires_scope` is surface reduction, not authorization. A tool spanning two scopes must check the specific scope its branch needs at call time (see `manage_draft`).
 - **Bulk confirm token** (`mail.py:_confirm_token`): `delete`/`move` require a token derived from the *matched message ids*, re-derived by the live run from its own scan. Binding it to ids rather than to the filter arguments is the point — a token must never authorise a set the caller did not see. Keep it stateless (no salt, no clock, no cache): the two calls may land on different Lambda instances.
 - **Shared HTTP client** (`graph.py:_http_client`): one pooled `httpx.Client` per process. Do not revert to a client per request — a bulk action builds a fresh `GraphClient` per message, so that would mean one TLS handshake per message.
