@@ -16,7 +16,11 @@ from unittest.mock import patch
 import pytest
 
 from msgraph_mcp.errors import GraphRequestError
-from msgraph_mcp.mail import _matches_filters, bulk_manage_messages_multi_pass
+from msgraph_mcp.mail import (
+    _confirm_token,
+    _matches_filters,
+    bulk_manage_messages_multi_pass,
+)
 from msgraph_mcp.models import MailMessageSummary
 
 
@@ -133,7 +137,12 @@ class TestCollectThenAct:
         )
         MockClient.return_value.request.side_effect = request
 
-        result = bulk_manage_messages_multi_pass(folder="inbox", action="delete", dry_run=False)
+        result = bulk_manage_messages_multi_pass(
+            folder="inbox",
+            action="delete",
+            dry_run=False,
+            confirm_token=_confirm_token("delete", None, ["m1", "m2"]),
+        )
 
         assert result["acted"] == 2
         assert result["already_gone"] == 0
@@ -157,7 +166,12 @@ class TestCollectThenAct:
         )
         MockClient.return_value.request.side_effect = request
 
-        result = bulk_manage_messages_multi_pass(folder="inbox", action="delete", dry_run=False)
+        result = bulk_manage_messages_multi_pass(
+            folder="inbox",
+            action="delete",
+            dry_run=False,
+            confirm_token=_confirm_token("delete", None, ["m1", "m2"]),
+        )
 
         assert result["acted"] == 1
         assert result["already_gone"] == 1

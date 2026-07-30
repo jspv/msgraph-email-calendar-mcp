@@ -240,6 +240,7 @@ def bulk_manage_messages(
     destination: str | None = None,
     limit: int | None = None,
     dry_run: bool = True,
+    confirm_token: str | None = None,
 ) -> dict:
     """Bulk-manage messages with filtering. Supports dry-run, delete, move, and mark-read actions.
 
@@ -255,6 +256,13 @@ def bulk_manage_messages(
     mailbox is live, so counts are a point-in-time snapshot. Collection and action
     are separate phases; messages moved or deleted between them are reported as
     ``already_gone``, not errors.
+
+    ``delete`` and ``move`` are two-step: run with ``dry_run=True``, review the
+    listed matches, then repeat with ``dry_run=False`` and the ``confirm_token``
+    from that preview. The token is derived from the matched message ids, so if
+    the mailbox changed in between the live run refuses and hands back a fresh
+    token rather than acting on a set you never saw. ``mark_read`` /
+    ``mark_unread`` are reversible and need no token.
     """
     if limit is not None and limit < 1:
         raise ValueError("limit must be a positive integer, or None to scan the whole folder")
@@ -269,6 +277,7 @@ def bulk_manage_messages(
         destination=destination,
         scan_limit=limit,
         dry_run=dry_run,
+        confirm_token=confirm_token,
     )
 
 
@@ -479,12 +488,20 @@ def create_event(
     calendar_id: str | None = None,
     account_id: str | None = None,
     user_id: str | None = None,
+    dry_run: bool = True,
 ) -> dict:
-    """Create a new calendar event. Pass user_id for shared calendars."""
+    """Create a calendar event. Dry-run by default. Pass user_id for shared calendars.
+
+    Graph emails invitations the instant an event with attendees is created and
+    there is no undo, so this previews by default. The preview costs no Graph
+    call and echoes the exact body that would be sent, including times converted
+    to UTC -- check those before setting ``dry_run=False``.
+    """
     return calendar.create_event(
         account_id, subject=subject, start_iso=start_iso, end_iso=end_iso,
         attendees=attendees, body=body, location=location,
         is_all_day=is_all_day, calendar_id=calendar_id, user_id=user_id,
+        dry_run=dry_run,
     )
 
 
@@ -500,12 +517,18 @@ def update_event(
     is_all_day: bool | None = None,
     account_id: str | None = None,
     user_id: str | None = None,
+    dry_run: bool = True,
 ) -> dict:
-    """Update an existing calendar event. Pass user_id for shared calendars."""
+    """Update a calendar event. Dry-run by default. Pass user_id for shared calendars.
+
+    Edits notify attendees. The preview spends one read to show the event's
+    current state alongside the proposed changes.
+    """
     return calendar.update_event(
         account_id, event_id=event_id, subject=subject,
         start_iso=start_iso, end_iso=end_iso, attendees=attendees,
         body=body, location=location, is_all_day=is_all_day, user_id=user_id,
+        dry_run=dry_run,
     )
 
 
@@ -515,9 +538,20 @@ def delete_event(
     cancel_message: str | None = None,
     account_id: str | None = None,
     user_id: str | None = None,
+    dry_run: bool = True,
 ) -> dict:
-    """Delete or cancel a calendar event. Pass user_id for shared calendars."""
-    return calendar.delete_event(account_id, event_id=event_id, cancel_message=cancel_message, user_id=user_id)
+    """Delete or cancel an event. Dry-run by default. Pass user_id for shared calendars.
+
+    The preview names the event -- subject, time, organizer, attendee count --
+    rather than echoing an opaque id, and states which of the two very different
+    outcomes applies: with ``cancel_message`` the event is cancelled and
+    attendees are **notified**; without it the event is hard-deleted and
+    **nobody is told**.
+    """
+    return calendar.delete_event(
+        account_id, event_id=event_id, cancel_message=cancel_message,
+        user_id=user_id, dry_run=dry_run,
+    )
 
 
 @_requires_scope(*_CALENDAR_WRITE)

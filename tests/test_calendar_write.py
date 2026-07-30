@@ -30,6 +30,7 @@ class TestCreateEvent:
             subject="Team Standup",
             start_iso="2026-04-01T09:00:00",
             end_iso="2026-04-01T09:30:00",
+            dry_run=False,
         )
         assert result["ok"] is True
         assert result["event"]["id"] == "event-1"
@@ -49,6 +50,7 @@ class TestCreateEvent:
             start_iso="2026-04-01T09:00:00",
             end_iso="2026-04-01T10:00:00",
             attendees=["alice@example.com", "bob@example.com"],
+            dry_run=False,
         )
         body = client.request.call_args[1]["json_body"]
         assert len(body["attendees"]) == 2
@@ -67,6 +69,7 @@ class TestCreateEvent:
             start_iso="2026-04-01T09:00:00",
             end_iso="2026-04-01T10:00:00",
             calendar_id="cal-123",
+            dry_run=False,
         )
         call_args = client.request.call_args
         assert "calendars/cal-123/events" in call_args[0][1]
@@ -84,6 +87,7 @@ class TestCreateEvent:
             start_iso="2026-04-01",
             end_iso="2026-04-02",
             is_all_day=True,
+            dry_run=False,
         )
         body = client.request.call_args[1]["json_body"]
         assert body["isAllDay"] is True
@@ -97,7 +101,9 @@ class TestUpdateEvent:
             "start": {"dateTime": "2026-04-01T09:00:00", "timeZone": "UTC"},
             "end": {"dateTime": "2026-04-01T10:00:00", "timeZone": "UTC"},
             "isAllDay": False, "location": {}, "webLink": ""}
-        result = update_event(account_id=None, event_id="event-1", subject="Updated")
+        result = update_event(
+            account_id=None, event_id="event-1", subject="Updated", dry_run=False
+        )
         assert result["ok"] is True
         call_args = client.request.call_args
         assert call_args[0] == ("PATCH", "/me/events/event-1")
@@ -117,6 +123,7 @@ class TestUpdateEvent:
             event_id="event-1",
             start_iso="2026-04-01T10:00:00",
             end_iso="2026-04-01T11:00:00",
+            dry_run=False,
         )
         body = client.request.call_args[1]["json_body"]
         assert "start" in body
@@ -128,7 +135,7 @@ class TestDeleteEvent:
     def test_simple_delete(self, MockClient):
         client = MockClient.return_value
         client.request.return_value = None
-        result = delete_event(account_id=None, event_id="event-1")
+        result = delete_event(account_id=None, event_id="event-1", dry_run=False)
         assert result["ok"] is True
         call_args = client.request.call_args
         assert call_args[0] == ("DELETE", "/me/events/event-1")
@@ -141,6 +148,7 @@ class TestDeleteEvent:
             account_id=None,
             event_id="event-1",
             cancel_message="Meeting cancelled due to conflict",
+            dry_run=False,
         )
         assert result["ok"] is True
         call_args = client.request.call_args
@@ -265,6 +273,7 @@ class TestEventTimeNormalisation:
             subject="Standup",
             start_iso="2026-07-30T14:00:00-07:00",
             end_iso="2026-07-30T14:30:00-07:00",
+            dry_run=False,
         )
 
         body = client.request.call_args[1]["json_body"]
@@ -281,6 +290,7 @@ class TestEventTimeNormalisation:
             subject="Standup",
             start_iso="2026-04-01T09:00:00",
             end_iso="2026-04-01T09:30:00",
+            dry_run=False,
         )
 
         body = client.request.call_args[1]["json_body"]
@@ -296,6 +306,7 @@ class TestEventTimeNormalisation:
             subject="Standup",
             start_iso="2026-04-01T09:00:00Z",
             end_iso="2026-04-01T09:30:00Z",
+            dry_run=False,
         )
 
         body = client.request.call_args[1]["json_body"]
@@ -306,7 +317,10 @@ class TestEventTimeNormalisation:
         client = MockClient.return_value
         client.request.return_value = {"id": "e4"}
 
-        update_event(account_id=None, event_id="e4", start_iso="2026-07-30T14:00:00-07:00")
+        update_event(
+            account_id=None, event_id="e4", start_iso="2026-07-30T14:00:00-07:00",
+            dry_run=False,
+        )
 
         body = client.request.call_args[1]["json_body"]
         assert body["start"] == {"dateTime": "2026-07-30T21:00:00", "timeZone": "UTC"}
@@ -320,3 +334,222 @@ class TestEventTimeNormalisation:
                 start_iso="next friday",
                 end_iso="2026-04-01T09:30:00",
             )
+
+
+_EVENT_PAYLOAD = {
+    "id": "event-1",
+    "subject": "Q3 Planning",
+    "start": {"dateTime": "2026-08-04T14:00:00", "timeZone": "UTC"},
+    "end": {"dateTime": "2026-08-04T15:00:00", "timeZone": "UTC"},
+    "isAllDay": False,
+    "location": {"displayName": "Room 4"},
+    "body": {"contentType": "text", "content": "agenda"},
+    "attendees": [
+        {"emailAddress": {"name": "Alice", "address": "alice@example.com"}},
+        {"emailAddress": {"name": "Bob", "address": "bob@example.com"}},
+    ],
+    "organizer": {"emailAddress": {"name": "Carol", "address": "carol@example.com"}},
+    "webLink": "https://outlook.com/event-1",
+    "isCancelled": False,
+    "isOnlineMeeting": False,
+}
+
+
+class TestCreateEventDryRun:
+    """Creating an event mails invitations immediately, so preview is the default."""
+
+    @patch("msgraph_mcp.calendar.GraphClient")
+    def test_dry_run_is_the_default_and_makes_no_graph_call(self, MockClient):
+        client = MockClient.return_value
+        result = create_event(
+            account_id=None,
+            subject="Standup",
+            start_iso="2026-04-01T09:00:00",
+            end_iso="2026-04-01T09:30:00",
+        )
+        assert result["dry_run"] is True
+        # The body is fully known client-side, so unlike mail's draft-based
+        # preview this costs nothing.
+        client.request.assert_not_called()
+
+    @patch("msgraph_mcp.calendar.GraphClient")
+    def test_preview_shows_the_body_that_would_be_sent(self, MockClient):
+        result = create_event(
+            account_id=None,
+            subject="Standup",
+            start_iso="2026-04-01T09:00:00",
+            end_iso="2026-04-01T09:30:00",
+            attendees=["alice@example.com"],
+        )
+        event = result["preview"]["event"]
+        assert event["subject"] == "Standup"
+        assert event["attendees"][0]["emailAddress"]["address"] == "alice@example.com"
+
+    @patch("msgraph_mcp.calendar.GraphClient")
+    def test_preview_shows_converted_utc_times(self, MockClient):
+        # The preview doubles as a check on the timezone conversion: a caller
+        # who types a -07:00 time should see 21:00 UTC before anything is booked.
+        result = create_event(
+            account_id=None,
+            subject="Standup",
+            start_iso="2026-07-30T14:00:00-07:00",
+            end_iso="2026-07-30T14:30:00-07:00",
+        )
+        event = result["preview"]["event"]
+        assert event["start"] == {"dateTime": "2026-07-30T21:00:00", "timeZone": "UTC"}
+
+    @patch("msgraph_mcp.calendar.GraphClient")
+    def test_preview_names_the_target_path(self, MockClient):
+        result = create_event(
+            account_id=None,
+            subject="Standup",
+            start_iso="2026-04-01T09:00:00",
+            end_iso="2026-04-01T09:30:00",
+            calendar_id="cal-123",
+        )
+        assert "calendars/cal-123/events" in result["preview"]["path"]
+
+    @patch("msgraph_mcp.calendar.GraphClient")
+    def test_message_says_nothing_was_created(self, MockClient):
+        result = create_event(
+            account_id=None,
+            subject="Standup",
+            start_iso="2026-04-01T09:00:00",
+            end_iso="2026-04-01T09:30:00",
+        )
+        assert "NOT created" in result["message"]
+
+    @patch("msgraph_mcp.calendar.GraphClient")
+    def test_dry_run_false_actually_posts(self, MockClient):
+        client = MockClient.return_value
+        client.request.return_value = {"id": "event-1"}
+        result = create_event(
+            account_id=None,
+            subject="Standup",
+            start_iso="2026-04-01T09:00:00",
+            end_iso="2026-04-01T09:30:00",
+            dry_run=False,
+        )
+        assert result["dry_run"] is False
+        assert client.request.call_args[0] == ("POST", "/me/calendar/events")
+
+    @patch("msgraph_mcp.calendar.GraphClient")
+    def test_validation_still_runs_in_dry_run(self, MockClient):
+        # A preview that accepts an unparseable time would be worse than useless.
+        with pytest.raises(ValueError, match="start_iso must be an ISO-8601 datetime"):
+            create_event(
+                account_id=None,
+                subject="Standup",
+                start_iso="next friday",
+                end_iso="2026-04-01T09:30:00",
+            )
+
+
+class TestUpdateEventDryRun:
+    @patch("msgraph_mcp.calendar.GraphClient")
+    def test_dry_run_is_the_default_and_does_not_patch(self, MockClient):
+        client = MockClient.return_value
+        client.request.return_value = _EVENT_PAYLOAD
+        result = update_event(account_id=None, event_id="event-1", subject="Q4 Planning")
+        assert result["dry_run"] is True
+        methods = {call[0][0] for call in client.request.call_args_list}
+        assert methods == {"GET"}
+
+    @patch("msgraph_mcp.calendar.GraphClient")
+    def test_preview_pairs_current_state_with_proposed_changes(self, MockClient):
+        client = MockClient.return_value
+        client.request.return_value = _EVENT_PAYLOAD
+        result = update_event(account_id=None, event_id="event-1", subject="Q4 Planning")
+        assert result["preview"]["current"]["subject"] == "Q3 Planning"
+        assert result["preview"]["changes"]["subject"] == "Q4 Planning"
+
+    @patch("msgraph_mcp.calendar.GraphClient")
+    def test_preview_converts_times_in_the_change_set(self, MockClient):
+        client = MockClient.return_value
+        client.request.return_value = _EVENT_PAYLOAD
+        result = update_event(
+            account_id=None, event_id="event-1", start_iso="2026-07-30T14:00:00-07:00"
+        )
+        changes = result["preview"]["changes"]
+        assert changes["start"] == {"dateTime": "2026-07-30T21:00:00", "timeZone": "UTC"}
+
+    @patch("msgraph_mcp.calendar.GraphClient")
+    def test_dry_run_false_actually_patches(self, MockClient):
+        client = MockClient.return_value
+        client.request.return_value = {"id": "event-1"}
+        result = update_event(
+            account_id=None, event_id="event-1", subject="Q4 Planning", dry_run=False
+        )
+        assert result["dry_run"] is False
+        assert client.request.call_args[0] == ("PATCH", "/me/events/event-1")
+
+
+class TestDeleteEventDryRun:
+    @patch("msgraph_mcp.calendar.GraphClient")
+    def test_dry_run_is_the_default_and_does_not_delete(self, MockClient):
+        client = MockClient.return_value
+        client.request.return_value = _EVENT_PAYLOAD
+        result = delete_event(account_id=None, event_id="event-1")
+        assert result["dry_run"] is True
+        methods = {call[0][0] for call in client.request.call_args_list}
+        assert methods == {"GET"}
+
+    @patch("msgraph_mcp.calendar.GraphClient")
+    def test_preview_names_the_event_rather_than_echoing_an_id(self, MockClient):
+        # An opaque id tells a reviewing human nothing about what is being lost.
+        client = MockClient.return_value
+        client.request.return_value = _EVENT_PAYLOAD
+        preview = delete_event(account_id=None, event_id="event-1")["preview"]
+        assert preview["subject"] == "Q3 Planning"
+        assert preview["attendee_count"] == 2
+        assert "2026-08-04" in preview["time_label"]
+        assert "carol@example.com" in preview["organizer"]
+
+    @patch("msgraph_mcp.calendar.GraphClient")
+    def test_message_warns_that_cancelling_notifies_attendees(self, MockClient):
+        client = MockClient.return_value
+        client.request.return_value = _EVENT_PAYLOAD
+        result = delete_event(
+            account_id=None, event_id="event-1", cancel_message="Conflict"
+        )
+        assert result["action"] == "cancel"
+        assert "notify 2 attendees" in result["message"]
+
+    @patch("msgraph_mcp.calendar.GraphClient")
+    def test_message_notes_that_hard_delete_is_silent(self, MockClient):
+        client = MockClient.return_value
+        client.request.return_value = _EVENT_PAYLOAD
+        result = delete_event(account_id=None, event_id="event-1")
+        assert result["action"] == "delete"
+        assert "without notifying" in result["message"]
+
+    @patch("msgraph_mcp.calendar.GraphClient")
+    def test_dry_run_false_actually_deletes(self, MockClient):
+        client = MockClient.return_value
+        client.request.return_value = None
+        result = delete_event(account_id=None, event_id="event-1", dry_run=False)
+        assert result["dry_run"] is False
+        assert client.request.call_args[0] == ("DELETE", "/me/events/event-1")
+
+    @patch("msgraph_mcp.calendar.GraphClient")
+    def test_dry_run_false_with_message_cancels(self, MockClient):
+        client = MockClient.return_value
+        client.request.return_value = None
+        result = delete_event(
+            account_id=None, event_id="event-1", cancel_message="Conflict", dry_run=False
+        )
+        assert client.request.call_args[0] == ("POST", "/me/events/event-1/cancel")
+        assert result["action"] == "cancelled"
+
+
+class TestRespondToEventIsNotGated:
+    """Accept/decline is reversible by responding again, so no dry-run gate."""
+
+    @patch("msgraph_mcp.calendar.GraphClient")
+    def test_responds_immediately_without_a_dry_run_flag(self, MockClient):
+        client = MockClient.return_value
+        client.request.return_value = None
+        result = respond_to_event(account_id=None, event_id="event-1", response="accept")
+        assert result["ok"] is True
+        assert "dry_run" not in result
+        assert client.request.call_args[0] == ("POST", "/me/events/event-1/accept")

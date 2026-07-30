@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel superseded runs on the same ref; the latest push is the one that matters.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.11 is the floor from requires-python; 3.14 is what the project is
+        # actually developed on, so both ends of the supported range are tested.
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install Python ${{ matrix.python-version }}
+        run: uv python install ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: uv sync --dev --python ${{ matrix.python-version }}
+
+      # `testpaths = ["tests"]` keeps scripts/smoke_test.py (which talks to the
+      # real Graph API) out of collection. tests/conftest.py additionally makes
+      # any accidental outbound HTTP call fail loudly rather than silently
+      # authenticating with whatever token happens to be around.
+      - name: Run tests
+        run: uv run --python ${{ matrix.python-version }} pytest -q

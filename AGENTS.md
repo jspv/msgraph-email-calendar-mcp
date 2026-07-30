@@ -108,7 +108,7 @@ developer's real cached token against their real mailbox.
 | `update_message` | `is_read`, `flag_status`, `categories` | Only supplied fields change |
 | `move_message` | `message_id`, `destination` | Well-known names: `inbox`, `drafts`, `sent`, `archive`, `deleted`, `junk` |
 | `delete_message` | `message_id`, `permanent=False` | Soft-delete by default |
-| `bulk_manage_messages` | filters + `action`, optional `limit`, `dry_run=True` | Dry-run **on** by default. Scans the whole folder unless `limit` is given. Check `truncated`/`stop_reason` — `truncated=False` means the count is a true folder total |
+| `bulk_manage_messages` | filters + `action`, optional `limit`, `dry_run=True`, `confirm_token` | Dry-run **on** by default. `delete`/`move` are two-step: preview, then re-call with the `confirm_token` the preview returned. Scans the whole folder unless `limit` is given. Check `truncated`/`stop_reason` — `truncated=False` means the count is a true folder total |
 | `create_draft` | `to`, `subject`, `body` | Saved to Drafts, not sent |
 | `add_attachment_to_draft` | `message_id`, `name`, `content_base64` | — |
 | `create_folder` | `name`, `parent_folder_id` | — |
@@ -135,10 +135,10 @@ developer's real cached token against their real mailbox.
 
 | Tool | Key parameters | Notes |
 |------|---------------|-------|
-| `create_event` | `subject`, `start_iso`, `end_iso`, `attendees` | Graph emails invitations immediately |
-| `update_event` | `event_id`, fields… | Updates notify attendees |
-| `delete_event` | `event_id`, `cancel_message` | No `cancel_message` → hard delete, no notice |
-| `respond_to_event` | `event_id`, `response` | Always notifies the organizer |
+| `create_event` | `subject`, `start_iso`, `end_iso`, `attendees`, `dry_run=True` | Graph emails invitations immediately, so dry-run is **on** by default. Preview costs no Graph call and echoes times converted to UTC |
+| `update_event` | `event_id`, fields…, `dry_run=True` | Updates notify attendees. Dry-run **on** by default; preview pairs current state with proposed changes |
+| `delete_event` | `event_id`, `cancel_message`, `dry_run=True` | Dry-run **on** by default; the preview names the event and states the consequence. With `cancel_message` → cancelled, attendees **notified**. Without → hard delete, **nobody told** |
+| `respond_to_event` | `event_id`, `response` | Always notifies the organizer. Not dry-run gated — responding again reverses it |
 
 ### Profile (`User.Read`) and People (`People.Read`)
 
@@ -159,10 +159,12 @@ These are load-bearing constraints — do not weaken them:
 - **Datetime normalization** (`models.py:_parse_utc`): Caller datetimes are parsed to tz-aware UTC. Calendar writes must go through `calendar._graph_datetime` — Graph's `dateTime` field carries no offset, so an offset-bearing string paired with `timeZone: "UTC"` books the event at the wrong hour.
 - **Token cache permissions** (`auth.py`): Cache file `0600`, parent directory `0700`. Preserve these.
 - **Soft-delete default**: `delete_message(permanent=False)`. The `permanent=True` path is irreversible — keep the default.
-- **Dry-run defaults**: `bulk_manage_messages`, `send_message`, `reply_to_message`, and `forward_message` all default to preview. Never flip a default to the acting value.
+- **Dry-run defaults**: `bulk_manage_messages`, `send_message`, `reply_to_message`, `forward_message`, `create_event`, `update_event`, and `delete_event` all default to preview. Never flip a default to the acting value. `respond_to_event` is intentionally exempt — it is reversible by responding again.
 - **Dry-run drafts are cleaned up in `finally`** (`mail.py`): the preview path creates a real draft. Keep the deletion unconditional.
 - **Input caps**: `list_messages`/`search_messages` at `max_list_limit` (default 1000), `list_events` at 100. `bulk_manage_messages` is **not** capped — it scans the whole folder by default; pass `limit` to bound it.
 - **Scope gating** (`tools.py`): `_requires_scope` is surface reduction, not authorization. A tool spanning two scopes must check the specific scope its branch needs at call time (see `manage_draft`).
+- **Bulk confirm token** (`mail.py:_confirm_token`): `delete`/`move` require a token derived from the *matched message ids*, re-derived by the live run from its own scan. Binding it to ids rather than to the filter arguments is the point — a token must never authorise a set the caller did not see. Keep it stateless (no salt, no clock, no cache): the two calls may land on different Lambda instances.
+- **Shared HTTP client** (`graph.py:_http_client`): one pooled `httpx.Client` per process. Do not revert to a client per request — a bulk action builds a fresh `GraphClient` per message, so that would mean one TLS handshake per message.
 
 ---
 
@@ -173,6 +175,8 @@ These are load-bearing constraints — do not weaken them:
 - **Error handling**: Raise from the custom hierarchy in `errors.py` for Graph/auth failures; plain `ValueError` is the established convention for caller-input validation. Never surface raw Graph error payloads.
 - **Validate caller input up front**, before the first Graph call, so a bad argument fails cheaply and cannot half-execute a bulk operation.
 - **Tests**: Unit tests use `unittest.mock` to patch `GraphClient`. There are no live-API integration tests. Use `scripts/smoke_test.py` for live testing.
+- **Tests must never touch the network.** `tests/conftest.py` enforces this by making any real `httpx` request raise; patch `GraphClient` instead. A test once reached the live Graph API using a developer's cached token — the guard exists so that cannot recur silently.
+- **Docs parity is enforced** by `tests/test_docs_parity.py`: the tool tables in `README.md` and `AGENTS.md` must match the registered tool set exactly, both directions. A new tool fails the build until it is documented in both.
 - **No new dependencies** without updating `pyproject.toml` and running `uv lock`.
 - **Python 3.11+** required.
 

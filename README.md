@@ -54,15 +54,15 @@ A [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) server that g
 | Mail | `update_message` | Mark read/unread, flag, or categorize |
 | Mail | `move_message` | Move to a folder (supports well-known names) |
 | Mail | `delete_message` | Soft-delete or permanently delete |
-| Mail | `bulk_manage_messages` | Bulk filtered actions with dry-run (scans whole folder by default; optional `limit`) |
+| Mail | `bulk_manage_messages` | Bulk filtered actions with dry-run (scans whole folder by default; `delete`/`move` need a `confirm_token`) |
 | Mail | `create_folder` | Create a new mail folder |
 | Mail | `list_aliases` | List email aliases / send-from addresses |
 | Calendar | `list_calendars` | List calendars (own or shared via `user_id`) |
 | Calendar | `list_events` | List events in a time range (limit 100) |
 | Calendar | `get_event` | Full event details with attendees |
-| Calendar | `create_event` | Create a calendar event |
-| Calendar | `update_event` | Update an existing event |
-| Calendar | `delete_event` | Delete or cancel an event |
+| Calendar | `create_event` | Create a calendar event (dry-run by default) |
+| Calendar | `update_event` | Update an existing event (dry-run by default) |
+| Calendar | `delete_event` | Delete or cancel an event (dry-run by default) |
 | Calendar | `respond_to_event` | Accept, decline, or tentatively accept |
 | Calendar | `check_availability` | Free/busy lookup or meeting time suggestions |
 | Contacts | `search_people` | Search contacts by name (limit 50; returns `job_title`) |
@@ -269,8 +269,41 @@ Write operations default to safe behavior:
 | `send_message` | `dry_run=True` | Creates a temporary draft for preview, then deletes it |
 | `reply_to_message` | `dry_run=True` | Preview before sending |
 | `forward_message` | `dry_run=True` | Preview before sending |
-| `bulk_manage_messages` | `dry_run=True` | Shows matches without executing |
+| `bulk_manage_messages` | `dry_run=True` | Shows matches without executing; `delete`/`move` also need a `confirm_token` |
 | `delete_message` | `permanent=False` | Moves to Deleted Items (recoverable) |
+| `create_event` | `dry_run=True` | Graph mails invitations immediately, so preview first |
+| `update_event` | `dry_run=True` | Preview shows current state next to the proposed changes |
+| `delete_event` | `dry_run=True` | Preview names the event and says whether attendees are notified |
+
+`respond_to_event` is deliberately **not** gated — accepting or declining is
+reversible by responding again, so a confirmation step would be friction with no
+safety payoff.
+
+### Confirming a bulk delete or move
+
+Destructive bulk actions are two-step. The dry run returns a `confirm_token`
+derived from the ids it actually matched:
+
+```jsonc
+// 1. preview
+{"action": "delete", "dry_run": true}
+// -> {"matched": 42, "confirm_token": "42-b7e2d4a1c3f9", "matches": [...]}
+
+// 2. act
+{"action": "delete", "dry_run": false, "confirm_token": "42-b7e2d4a1c3f9"}
+```
+
+The live run rescans and re-derives the token from its own results. If the
+mailbox changed in between, it refuses rather than acting on a set you never saw:
+
+```
+confirm_token does not match the current scan: it described 42 message(s),
+this scan matched 43. The mailbox is live, so re-check the preview before
+acting. Confirm with the new token: 43-9f1c2ae5b7d0
+```
+
+Nothing is stored server-side — the token is recomputed each time — so this works
+unchanged across a Lambda cold start between the two calls.
 
 ### Bulk scan semantics
 
@@ -320,6 +353,19 @@ uv run pytest
 pip install -e '.[dev]'
 pytest
 ```
+
+CI runs the suite on Python 3.11–3.14 for every push and pull request to `main`
+(`.github/workflows/ci.yml`).
+
+Two guardrails run as part of the ordinary test suite:
+
+- **`tests/conftest.py`** blocks real outbound HTTP. Tests that need it patch
+  `GraphClient`; anything that reaches `httpx` fails loudly. This exists because
+  a test once made a live Graph call against a developer's cached token.
+- **`tests/test_docs_parity.py`** asserts the tool tables in `README.md` and
+  `AGENTS.md` match the registered tools exactly, in both directions. Adding a
+  tool without documenting it — or documenting one that does not exist — fails
+  the build.
 
 ### Smoke test harness
 
