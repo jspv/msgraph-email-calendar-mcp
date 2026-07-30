@@ -69,6 +69,18 @@ def _address_label(person: dict[str, Any] | None) -> str | None:
     return name or address
 
 
+def _flag_status(payload: dict[str, Any]) -> str | None:
+    """Pull ``flag.flagStatus`` out of a Graph message payload.
+
+    ``None`` means the column was not requested -- distinct from
+    ``"notFlagged"``, which means Graph was asked and said no flag is set.
+    """
+    flag = payload.get("flag")
+    if not isinstance(flag, dict):
+        return None
+    return flag.get("flagStatus")
+
+
 def _recipient_labels(items: list[dict[str, Any]]) -> list[str]:
     """Format a list of Graph recipient objects into display labels."""
     labels: list[str] = []
@@ -139,6 +151,13 @@ class MailMessageSummary(BaseModel):
     cc_recipient_labels: list[str] = Field(default_factory=list)
     is_read: bool = False
     has_attachments: bool = False
+    #: Graph's ``flag.flagStatus``: ``flagged`` | ``complete`` | ``notFlagged``.
+    #: Kept as the raw three-state string rather than a bool, which would lose
+    #: the distinction between "never flagged" and "followed up and done", and
+    #: which round-trips straight back into ``flag_message``. ``None`` means the
+    #: column was not selected, not that the message is unflagged.
+    flag_status: str | None = None
+    categories: list[str] = Field(default_factory=list)
     conversation_id: str | None = None
     body_preview: str | None = None
     summary: str | None = None
@@ -159,6 +178,8 @@ class MailMessageDetail(BaseModel):
     is_read: bool = False
     has_attachments: bool = False
     importance: str | None = None
+    flag_status: str | None = None
+    categories: list[str] = Field(default_factory=list)
     body_preview: str | None = None
     body_content_type: str | None = None
     body_content: str | None = None

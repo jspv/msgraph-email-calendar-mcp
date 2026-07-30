@@ -41,7 +41,7 @@ A [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) server that g
 | Auth | `start_auth` | Begin device-code flow (returns URL + code) |
 | Auth | `finish_auth` | Complete device-code flow after user approval |
 | Mail | `list_folders` | List mail folders with item/unread counts |
-| Mail | `list_messages` | List messages in a folder (limit 1000; `since`/`until` window, `fields` override, `conversation_id` and recipients in results) |
+| Mail | `list_messages` | List messages in a folder (limit 1000; `since`/`until` window, `flag_status` filter, `fields` override; results carry `conversation_id`, recipients, `flag_status`, `categories`) |
 | Mail | `get_message` | Full message details including body |
 | Mail | `search_messages` | Search via OData `$search` (limit 1000; `conversation_id` in results) |
 | Mail | `get_attachments` | List attachment metadata, or download one by `attachment_id` |
@@ -54,7 +54,7 @@ A [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) server that g
 | Mail | `update_message` | Mark read/unread, flag, or categorize |
 | Mail | `move_message` | Move to a folder (supports well-known names) |
 | Mail | `delete_message` | Soft-delete or permanently delete |
-| Mail | `bulk_manage_messages` | Bulk filtered actions with dry-run (whole folder by default; `received_after`/`received_before` bound it server-side; `recipient_contains` matches To+Cc; `delete`/`move` need a `confirm_token`) |
+| Mail | `bulk_manage_messages` | Bulk filtered actions with dry-run (whole folder by default; `received_after`/`received_before` bound it server-side; `recipient_contains`, `flag_status`, `category` filters; `delete`/`move` need a `confirm_token`) |
 | Mail | `create_folder` | Create a new mail folder |
 | Mail | `list_aliases` | List email aliases / send-from addresses |
 | Calendar | `list_calendars` | List calendars (own or shared via `user_id`) |
@@ -343,6 +343,29 @@ never silently clamped. The response reports coverage explicitly:
 | `truncated` | `False` only when the scan reached the folder end (count is a true total) |
 | `stop_reason` | `folder_exhausted` \| `window_exhausted` \| `scan_limit_reached` \| `cursor_stalled` |
 | `acted` / `already_gone` / `failed` | Per-message outcomes of a live (non-dry-run) run |
+
+#### Follow-up flags and categories
+
+`flag_message` and `categorize_message` could always *write* these; nothing read
+them back, so an agent could flag a message and then had no way to report which
+messages were flagged. Both are now on every list and detail result
+(`flag_status`, `categories`) and appear in the generated `summary` string.
+
+`list_messages(flag_status="flagged")` filters server-side, so "show me my
+flagged mail" is one request. Two constraints worth knowing, both confirmed
+against the live API rather than inferred:
+
+- Exchange rejects a flag restriction combined with a sort — the pairing returns
+  *"The restriction or sort order is too complex for this operation."* So
+  `$orderby` is dropped for these queries and the rows are re-sorted client-side
+  to keep the newest-first contract.
+- Because the server chose those rows unsorted, `limit` selects an *arbitrary*
+  subset rather than the newest N. Raise `limit` above your expected flagged
+  count, or narrow with `since`/`until` — a date clause **does** combine with the
+  flag filter.
+
+`bulk_manage_messages` filters flags client-side instead, since its cursor
+pagination depends on the `receivedDateTime` sort it would otherwise have to drop.
 
 #### Date windows
 

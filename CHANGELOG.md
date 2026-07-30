@@ -1,5 +1,58 @@
 # Changelog
 
+## 0.5.0
+
+Follow-up flags and categories are readable, closing a write-only asymmetry.
+
+### Added
+
+- **`flag_status` and `categories` on every list and detail result.**
+  `flag_message` and `categorize_message` could always set these, but no read
+  path returned them, so an agent could flag a message and then had no way to
+  tell which messages were flagged — including one it had flagged itself moments
+  earlier. "Show me my flagged mail" was unanswerable.
+
+  The `fields` override was not a workaround: `$select` widened and Graph did
+  return `flag`, but the model dropped it on the way back — the same failure
+  mode recipients had before #11.
+
+  `flag_status` is kept as Graph's raw three-state string (`flagged` /
+  `complete` / `notFlagged`) rather than a bool, which would lose the
+  distinction between "never flagged" and "followed up and done", and which
+  feeds straight back into `flag_message`. `None` means the column was not
+  selected — distinct from `notFlagged`, which means Graph was asked.
+
+  Flagged state and categories also appear in the generated `summary` string.
+  Unflagged rows say nothing, since most mail is unflagged and the note would
+  crowd out the body preview.
+
+- **`flag_status` filter on `list_messages`**, applied server-side, so "show me
+  my flagged mail" is one request rather than a folder scan.
+- **`flag_status` and `category` filters on `bulk_manage_messages`**, applied
+  client-side — its cursor pagination depends on a `receivedDateTime` sort that
+  a server-side flag filter would force it to drop (see below).
+
+### Known Graph constraint
+
+Exchange rejects a `flag/flagStatus` restriction combined with a sort:
+
+> The restriction or sort order is too complex for this operation.
+
+Confirmed against the live API, not inferred — every shape carrying an
+`$orderby` fails, while the same filter without one succeeds, including
+alongside a `receivedDateTime` clause. `list_messages` therefore drops
+`$orderby` for flag queries and re-sorts the returned rows client-side to keep
+its newest-first contract.
+
+Consequence worth knowing: because the server selected those rows unsorted,
+`limit` picks an **arbitrary** subset rather than the newest N. Raise `limit`
+above the expected flagged count, or narrow with `since`/`until`, which does
+combine with the flag filter.
+
+Mocked tests could not have caught this — they assert the `$filter` string is
+built, not that Graph accepts it. The constraint is now pinned by name in the
+test suite.
+
 ## 0.4.0
 
 Closes #4 and #11. Both are about list-level results carrying enough to act on

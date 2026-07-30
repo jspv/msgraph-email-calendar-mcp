@@ -158,6 +158,7 @@ def list_messages(
     limit: int = 10,
     since: str | None = None,
     until: str | None = None,
+    flag_status: str | None = None,
     fields: list[str] | None = None,
 ) -> list[dict]:
     """List recent mail messages from a folder, newest first.
@@ -169,12 +170,18 @@ def list_messages(
     extended payload. Each summary includes `conversation_id` for threading, and
     `to_recipient_labels` / `cc_recipient_labels` so Sent Items rows are
     distinguishable and Inbox rows show which alias was addressed.
+
+    Pass `flag_status` (`flagged` | `complete` | `notFlagged`) to filter on
+    follow-up state server-side — this is how you answer "show me my flagged
+    mail" in one request. Every summary also reports `flag_status` and
+    `categories`, which were previously writable but not readable.
     """
     bounded_limit = max(1, min(limit, settings.max_list_limit))
     return [
         item.model_dump()
         for item in mail.list_messages(
-            account_id, folder, bounded_limit, since=since, until=until, fields=fields
+            account_id, folder, bounded_limit, since=since, until=until,
+            flag_status=flag_status, fields=fields
         )
     ]
 
@@ -239,6 +246,8 @@ def bulk_manage_messages(
     sender_contains: str | None = None,
     subject_contains: str | None = None,
     recipient_contains: str | None = None,
+    flag_status: str | None = None,
+    category: str | None = None,
     received_after: str | None = None,
     received_before: str | None = None,
     unread_only: bool = False,
@@ -280,6 +289,9 @@ def bulk_manage_messages(
 
     ``recipient_contains`` matches across both To and Cc. It is what makes
     "everything sent to my <vendor> alias" a single call.
+
+    ``flag_status`` (``flagged`` | ``complete`` | ``notFlagged``) and
+    ``category`` filter on follow-up state, which list results now report.
     """
     if limit is not None and limit < 1:
         raise ValueError("limit must be a positive integer, or None to scan the whole folder")
@@ -289,6 +301,8 @@ def bulk_manage_messages(
         sender_contains=sender_contains,
         subject_contains=subject_contains,
         recipient_contains=recipient_contains,
+        flag_status=flag_status,
+        category=category,
         received_after=received_after,
         received_before=received_before,
         unread_only=unread_only,

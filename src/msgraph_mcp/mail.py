@@ -18,6 +18,7 @@ from .models import (
     MailMessageSummary,
     _address_label,
     _clean_text_snippet,
+    _flag_status,
     _format_datetime_label,
     _parse_utc,
     _recipient_labels,
@@ -84,6 +85,12 @@ def _sender_parts(payload: dict) -> tuple[str | None, str | None]:
 
 
 
+#: Graph's follow-up flag states. Read by the list/detail paths and the bulk
+#: filter, written by ``flag_message`` -- the same vocabulary both ways, so a
+#: value read off a message feeds straight back into a write.
+_VALID_FLAG_STATUSES = {"flagged", "complete", "notFlagged"}
+
+
 #: Columns selected for list-level message summaries. ``conversationId`` lets a
 #: client thread/group messages without a follow-up get_message per item.
 #:
@@ -104,6 +111,8 @@ _SUMMARY_SELECT = (
     "isRead",
     "hasAttachments",
     "conversationId",
+    "flag",
+    "categories",
     "bodyPreview",
 )
 
@@ -145,6 +154,8 @@ def _message_summary(item: dict) -> MailMessageSummary:
     cc_recipients = item.get("ccRecipients") or []
     to_labels = _recipient_labels(to_recipients)
     cc_labels = _recipient_labels(cc_recipients)
+    flag_status = _flag_status(item)
+    categories = item.get("categories") or []
     received_datetime = item.get("receivedDateTime")
     received_label = _format_datetime_label(received_datetime)
     body_preview = item.get("bodyPreview")
@@ -155,6 +166,12 @@ def _message_summary(item: dict) -> MailMessageSummary:
         status_bits.append("unread")
     if bool(item.get("hasAttachments", False)):
         status_bits.append("attachments")
+    # Only mention a flag when there is one -- most mail is unflagged, and
+    # saying so on every row is noise that crowds out the body preview.
+    if flag_status == "flagged":
+        status_bits.append("flagged")
+    elif flag_status == "complete":
+        status_bits.append("follow-up done")
     summary_parts = [subject]
     meta_bits = [bit for bit in [sender_label, received_label] if bit]
     if meta_bits:
@@ -168,6 +185,8 @@ def _message_summary(item: dict) -> MailMessageSummary:
         summary_parts.append("cc " + ", ".join(cc_labels))
     if status_bits:
         summary_parts.append(f"[{', '.join(status_bits)}]")
+    if categories:
+        summary_parts.append("categories: " + ", ".join(categories))
     if body_preview_clean:
         summary_parts.append(body_preview_clean)
     return MailMessageSummary(
@@ -184,6 +203,8 @@ def _message_summary(item: dict) -> MailMessageSummary:
         cc_recipient_labels=cc_labels,
         is_read=bool(item.get("isRead", False)),
         has_attachments=bool(item.get("hasAttachments", False)),
+        flag_status=flag_status,
+        categories=categories,
         conversation_id=item.get("conversationId"),
         body_preview=body_preview,
         summary=" — ".join(summary_parts),
@@ -198,6 +219,7 @@ def list_messages(
     include_body_preview: bool = True,
     since: str | None = None,
     until: str | None = None,
+    flag_status: str | None = None,
     fields: list[str] | None = None,
 ) -> list[MailMessageSummary]:
     """List recent messages from *folder*, newest first.
@@ -229,6 +251,18 @@ def list_messages(
         date_clauses.append(f"receivedDateTime ge {_validate_iso(since, 'since')}")
     if until is not None:
         date_clauses.append(f"receivedDateTime le {_validate_iso(until, 'until')}")
+    if flag_status is not None:
+        if flag_status not in _VALID_FLAG_STATUSES:
+            raise ValueError(f"flag_status must be one of {sorted(_VALID_FLAG_STATUSES)}")
+        # Server-side so "show me my flagged mail" is one request rather than a
+        # full scan filtered after the fetch.
+        date_clauses.append(f"flag/flagStatus eq '{flag_status}'")
+        # Exchange refuses a flag restriction combined with a sort: the pairing
+        # returns "The restriction or sort order is too complex for this
+        # operation". Verified against the live API -- the same filter without
+        # `$orderby` succeeds, including alongside a receivedDateTime clause.
+        # Ordering is restored below rather than given up.
+        params.pop("$orderby", None)
     if date_clauses:
         params["$filter"] = " and ".join(date_clauses)
     items = client.paginate(
@@ -236,6 +270,11 @@ def list_messages(
         params=params,
         limit=limit,
     )
+    if flag_status is not None:
+        # Graph returned these unsorted, so sort here to keep the newest-first
+        # contract. Note this orders the rows that came back; it cannot make
+        # `limit` select the newest ones, since the server chose them unsorted.
+        items.sort(key=lambda i: i.get("receivedDateTime") or "", reverse=True)
     return [_message_summary(item) for item in items]
 
 
@@ -248,7 +287,7 @@ def get_message(account_id: str | None, message_id: str) -> MailMessageDetail:
         "GET",
         f"/me/messages/{message_id}",
         params={
-            "$select": "id,subject,from,toRecipients,ccRecipients,receivedDateTime,isRead,hasAttachments,importance,bodyPreview,body",
+            "$select": "id,subject,from,toRecipients,ccRecipients,receivedDateTime,isRead,hasAttachments,importance,flag,categories,bodyPreview,body",
         },
     ) or {}
     sender = item.get("from")
@@ -282,6 +321,8 @@ def get_message(account_id: str | None, message_id: str) -> MailMessageDetail:
         is_read=bool(item.get("isRead", False)),
         has_attachments=bool(item.get("hasAttachments", False)),
         importance=item.get("importance"),
+        flag_status=_flag_status(item),
+        categories=item.get("categories") or [],
         body_preview=body_preview,
         body_content_type=(item.get("body") or {}).get("contentType"),
         body_content=(item.get("body") or {}).get("content"),
@@ -377,6 +418,8 @@ def _matches_filters(
     sender_contains: str | None = None,
     subject_contains: str | None = None,
     recipient_contains: str | None = None,
+    flag_status: str | None = None,
+    category: str | None = None,
     received_after: str | datetime | None = None,
     unread_only: bool = False,
 ) -> bool:
@@ -404,6 +447,14 @@ def _matches_filters(
         needle = recipient_contains.lower()
         haystack = " ".join(item.to_recipient_labels + item.cc_recipient_labels).lower()
         if needle not in haystack:
+            return False
+    if flag_status and item.flag_status != flag_status:
+        # A message whose flag column was never selected reports None, which is
+        # not the same as notFlagged -- so it cannot satisfy any flag filter.
+        return False
+    if category:
+        needle = category.lower()
+        if not any(needle == c.lower() for c in item.categories):
             return False
     if unread_only and item.is_read:
         return False
@@ -596,6 +647,8 @@ def bulk_manage_messages_multi_pass(
     sender_contains: str | None = None,
     subject_contains: str | None = None,
     recipient_contains: str | None = None,
+    flag_status: str | None = None,
+    category: str | None = None,
     received_after: str | None = None,
     received_before: str | None = None,
     unread_only: bool = False,
@@ -657,6 +710,8 @@ def bulk_manage_messages_multi_pass(
         )
     if action == "move" and not destination:
         raise ValueError("destination is required when action='move'")
+    if flag_status is not None and flag_status not in _VALID_FLAG_STATUSES:
+        raise ValueError(f"flag_status must be one of {sorted(_VALID_FLAG_STATUSES)}")
 
     # Validate up front so a malformed or inverted window fails before the first
     # Graph call. An inverted window would otherwise return zero matches, which
@@ -682,6 +737,8 @@ def bulk_manage_messages_multi_pass(
         "sender_contains": sender_contains,
         "subject_contains": subject_contains,
         "recipient_contains": recipient_contains,
+        "flag_status": flag_status,
+        "category": category,
         # Parsed once up front so a malformed cutoff fails before any Graph
         # call, and so a whole-folder scan does not re-parse it per message.
         "received_after": (
@@ -1012,9 +1069,6 @@ def list_child_folders(
         )
         for item in payload.get("value", [])
     ]
-
-
-_VALID_FLAG_STATUSES = {"flagged", "complete", "notFlagged"}
 
 
 def flag_message(
