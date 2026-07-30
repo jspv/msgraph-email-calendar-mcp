@@ -4,6 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from msgraph_mcp.errors import GraphRequestError
 from msgraph_mcp.mail import (
     _build_recipients,
     _build_from,
@@ -325,3 +326,86 @@ class TestSendDraft:
         assert result["ok"] is True
         call_args = client.request.call_args
         assert call_args[0] == ("POST", "/me/messages/draft-1/send")
+
+
+class TestDryRunDraftLifecycle:
+    """The dry-run preview builds a real draft, so it must always clean it up.
+
+    Both failure modes matter: a Graph response with no usable id should raise
+    a typed error rather than KeyError, and a failure after the draft exists
+    must not leave it sitting in the user's Drafts folder.
+    """
+
+    @patch("msgraph_mcp.mail.GraphClient")
+    def test_send_raises_typed_error_when_draft_has_no_id(self, MockClient):
+        client = MockClient.return_value
+        client.request.return_value = {}  # Graph returned an empty body
+
+        with pytest.raises(GraphRequestError, match="did not return a draft id"):
+            send_message(
+                account_id=None, to=["a@x.com"], subject="s", body="b", dry_run=True
+            )
+
+    @patch("msgraph_mcp.mail.GraphClient")
+    def test_send_deletes_the_draft_when_preview_fails(self, MockClient):
+        client = MockClient.return_value
+
+        def _request(method, path, *, params=None, json_body=None):
+            if method == "POST" and path == "/me/messages":
+                return {"id": "draft-1"}
+            if method == "DELETE":
+                return None
+            raise GraphRequestError("boom", status_code=500)
+
+        client.request.side_effect = _request
+
+        # Force a failure between create and delete by making the GET blow up.
+        with patch("msgraph_mcp.mail._draft_preview", side_effect=RuntimeError("boom")):
+            with pytest.raises(RuntimeError):
+                send_message(
+                    account_id=None, to=["a@x.com"], subject="s", body="b", dry_run=True
+                )
+
+        deletes = [
+            c for c in client.request.call_args_list
+            if c[0][0] == "DELETE" and c[0][1] == "/me/messages/draft-1"
+        ]
+        assert len(deletes) == 1, "dry-run draft was left behind"
+
+    @patch("msgraph_mcp.mail.GraphClient")
+    def test_reply_raises_typed_error_when_draft_has_no_id(self, MockClient):
+        client = MockClient.return_value
+        client.request.return_value = {}
+
+        with pytest.raises(GraphRequestError, match="did not return a draft id"):
+            reply_to_message(account_id=None, message_id="m1", body="b", dry_run=True)
+
+    @patch("msgraph_mcp.mail.GraphClient")
+    def test_forward_raises_typed_error_when_draft_has_no_id(self, MockClient):
+        client = MockClient.return_value
+        client.request.return_value = {}
+
+        with pytest.raises(GraphRequestError, match="did not return a draft id"):
+            forward_message(account_id=None, message_id="m1", to=["a@x.com"], dry_run=True)
+
+    @patch("msgraph_mcp.mail.GraphClient")
+    def test_forward_deletes_the_draft_when_patch_fails(self, MockClient):
+        client = MockClient.return_value
+
+        def _request(method, path, *, params=None, json_body=None):
+            if method == "POST" and path.endswith("/createForward"):
+                return {"id": "draft-2"}
+            if method == "PATCH":
+                raise GraphRequestError("patch failed", status_code=500)
+            return None
+
+        client.request.side_effect = _request
+
+        with pytest.raises(GraphRequestError, match="patch failed"):
+            forward_message(account_id=None, message_id="m1", to=["a@x.com"], dry_run=True)
+
+        deletes = [
+            c for c in client.request.call_args_list
+            if c[0][0] == "DELETE" and c[0][1] == "/me/messages/draft-2"
+        ]
+        assert len(deletes) == 1, "dry-run draft was left behind"

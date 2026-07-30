@@ -44,8 +44,7 @@ A [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) server that g
 | Mail | `list_messages` | List messages in a folder (limit 1000; `since` filter, `fields` override, `conversation_id` in results) |
 | Mail | `get_message` | Full message details including body |
 | Mail | `search_messages` | Search via OData `$search` (limit 1000; `conversation_id` in results) |
-| Mail | `list_attachments` | List attachment metadata for a message |
-| Mail | `get_attachments` | Download a single attachment |
+| Mail | `get_attachments` | List attachment metadata, or download one by `attachment_id` |
 | Mail | `send_message` | Send a new email (dry-run by default) |
 | Mail | `reply_to_message` | Reply or reply-all (dry-run by default) |
 | Mail | `forward_message` | Forward a message (dry-run by default) |
@@ -100,6 +99,13 @@ Add **delegated** Microsoft Graph permissions:
 | `Calendars.ReadWrite` | Read and write calendar events |
 | `Calendars.ReadWrite.Shared` | Access shared / delegated calendars |
 | `People.Read` | Search contacts by name |
+
+> **`Calendars.ReadWrite.Shared` is the widest permission here.** With it, every
+> calendar tool accepts a `user_id` and can create, modify, delete, or cancel
+> events on any calendar the signed-in user has been granted access to —
+> cancelling someone else's meeting emails all of its attendees. There is no
+> allowlist of targetable users; authorization rests entirely with Graph. Drop
+> this scope if you don't need it. See [SECURITY_REVIEW.md](SECURITY_REVIEW.md).
 
 For **read-only** use, replace `Mail.ReadWrite` and `Mail.Send` with `Mail.Read`, and `Calendars.ReadWrite` / `Calendars.ReadWrite.Shared` with `Calendars.Read`, and set `MICROSOFT_SCOPES` to match.
 

@@ -6,10 +6,27 @@ Models carry both raw Graph fields and pre-formatted ``*_label`` /
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from pydantic import BaseModel, Field
+
+
+def _parse_utc(value: str, label: str) -> datetime:
+    """Parse an ISO-8601 string to a tz-aware UTC datetime.
+
+    A value without an offset (e.g. the bare ``2026-01-01`` a caller is likely
+    to type) is read as UTC rather than left naive: Graph always returns
+    tz-aware timestamps, and comparing the two would raise ``TypeError``.
+    Raises ``ValueError`` naming *label* when the value will not parse.
+    """
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (ValueError, AttributeError) as exc:
+        raise ValueError(f"{label} must be an ISO-8601 datetime, got {value!r}") from exc
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def _safe_parse_datetime(value: str | None) -> datetime | None:

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+import pytest
+
 from msgraph_mcp.calendar import (
     create_event,
     update_event,
@@ -243,3 +245,78 @@ class TestGetSchedule:
         assert result[0].availability_view == "0010220"
         call_args = client.request.call_args
         assert call_args[0] == ("POST", "/me/calendar/getSchedule")
+
+
+class TestEventTimeNormalisation:
+    """Event times are converted to real UTC, not just labelled UTC.
+
+    ``dateTimeTimeZone.dateTime`` carries no offset of its own, so pairing an
+    offset-bearing string with ``timeZone: "UTC"`` would land the event at the
+    wrong hour.
+    """
+
+    @patch("msgraph_mcp.calendar.GraphClient")
+    def test_create_converts_offset_bearing_times_to_utc(self, MockClient):
+        client = MockClient.return_value
+        client.request.return_value = {"id": "e1"}
+
+        create_event(
+            account_id=None,
+            subject="Standup",
+            start_iso="2026-07-30T14:00:00-07:00",
+            end_iso="2026-07-30T14:30:00-07:00",
+        )
+
+        body = client.request.call_args[1]["json_body"]
+        assert body["start"] == {"dateTime": "2026-07-30T21:00:00", "timeZone": "UTC"}
+        assert body["end"] == {"dateTime": "2026-07-30T21:30:00", "timeZone": "UTC"}
+
+    @patch("msgraph_mcp.calendar.GraphClient")
+    def test_create_reads_naive_times_as_utc_unchanged(self, MockClient):
+        client = MockClient.return_value
+        client.request.return_value = {"id": "e2"}
+
+        create_event(
+            account_id=None,
+            subject="Standup",
+            start_iso="2026-04-01T09:00:00",
+            end_iso="2026-04-01T09:30:00",
+        )
+
+        body = client.request.call_args[1]["json_body"]
+        assert body["start"] == {"dateTime": "2026-04-01T09:00:00", "timeZone": "UTC"}
+
+    @patch("msgraph_mcp.calendar.GraphClient")
+    def test_create_accepts_trailing_z(self, MockClient):
+        client = MockClient.return_value
+        client.request.return_value = {"id": "e3"}
+
+        create_event(
+            account_id=None,
+            subject="Standup",
+            start_iso="2026-04-01T09:00:00Z",
+            end_iso="2026-04-01T09:30:00Z",
+        )
+
+        body = client.request.call_args[1]["json_body"]
+        assert body["start"] == {"dateTime": "2026-04-01T09:00:00", "timeZone": "UTC"}
+
+    @patch("msgraph_mcp.calendar.GraphClient")
+    def test_update_converts_offset_bearing_times_to_utc(self, MockClient):
+        client = MockClient.return_value
+        client.request.return_value = {"id": "e4"}
+
+        update_event(account_id=None, event_id="e4", start_iso="2026-07-30T14:00:00-07:00")
+
+        body = client.request.call_args[1]["json_body"]
+        assert body["start"] == {"dateTime": "2026-07-30T21:00:00", "timeZone": "UTC"}
+
+    @patch("msgraph_mcp.calendar.GraphClient")
+    def test_rejects_malformed_start(self, MockClient):
+        with pytest.raises(ValueError, match="start_iso must be an ISO-8601 datetime"):
+            create_event(
+                account_id=None,
+                subject="Standup",
+                start_iso="next friday",
+                end_iso="2026-04-01T09:30:00",
+            )

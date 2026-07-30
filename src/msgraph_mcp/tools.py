@@ -388,6 +388,16 @@ def manage_draft(
 ) -> dict:
     """Update and/or send a previously created draft. Provide fields to update, set send=True to send. Use after create_draft and optionally add_attachment_to_draft."""
     if any(v is not None for v in [to, subject, body, cc, bcc, send_as]):
+        # This tool registers under either _MAIL_WRITE or _MAIL_SEND so that a
+        # send-only deployment can still dispatch a draft. Editing one needs
+        # write, though, so refuse here rather than issue a request the token
+        # cannot satisfy.
+        if not set(settings.scopes).intersection(_MAIL_WRITE):
+            raise ValueError(
+                "Updating a draft requires the Mail.ReadWrite scope; this server "
+                "is configured for sending only. Call manage_draft with send=True "
+                "and no update fields, or re-authenticate with Mail.ReadWrite."
+            )
         result = mail.update_draft(
             account_id, message_id=message_id, to=to, subject=subject,
             body=body, cc=cc, bcc=bcc, send_as=send_as,

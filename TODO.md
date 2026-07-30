@@ -1,10 +1,28 @@
 # TODO
 
-## Attachment support
+## Safety
 
-The `has_attachments` flag is surfaced on messages but there are no tools to work with attachments.
+- [ ] Confirmation token for bulk escalation — require the caller to echo a
+      value from the dry-run response before `dry_run=False` acts, so a single
+      injected tool call cannot go from preview to folder-wide delete.
+- [ ] `dry_run` for calendar writes. `create_event`/`update_event`/`delete_event`
+      email attendees the moment they are called, with no preview step.
+- [ ] Optional allowlist for `user_id` (shared-calendar targets) and outbound
+      recipient domains. See SECURITY_REVIEW.md → "Shared mailboxes and calendars".
+- [ ] `MSGRAPH_READ_ONLY=1` kill switch that drops mutating tools regardless of
+      token scope.
 
-- [ ] `list_attachments(message_id)` — fetch metadata only (`id`, `name`, `size`, `contentType`) via `/me/messages/{id}/attachments?$select=id,name,size,contentType` without pulling content bytes
-- [ ] `get_attachment(message_id, attachment_id)` — download a single attachment's content via `/me/messages/{id}/attachments/{attachmentId}/$value`
+## Performance
 
-Note: Graph does not support partial/range fetching of message bodies — `bodyPreview` (~255 chars plain text) is the only built-in truncation. Attachment content must be fetched as a separate call from the message itself.
+- [ ] Reuse a single `httpx.Client`. `GraphClient.request` constructs a new one
+      per call, so a 500-message bulk action pays 500 TCP+TLS handshakes.
+- [ ] Async tool functions. Everything is synchronous and `time.sleep`s on
+      retry backoff, so a throttled whole-folder scan stalls the server process.
+
+## Known limitations
+
+- Graph does not support partial/range fetching of message bodies —
+  `bodyPreview` (~255 chars plain text) is the only built-in truncation.
+- Bulk paging anchors on `receivedDateTime`. A full page of messages sharing one
+  timestamp cannot advance the cursor; the scan stops and reports
+  `stop_reason="cursor_stalled"` rather than looping.

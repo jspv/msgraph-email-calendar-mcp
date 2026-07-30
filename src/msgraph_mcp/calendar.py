@@ -20,8 +20,23 @@ from .models import (
     _clean_text_snippet,
     _event_time_label,
     _location_label,
+    _parse_utc,
     _recipient_labels,
 )
+
+
+def _graph_datetime(value: str, label: str) -> dict[str, str]:
+    """Build a Graph ``dateTimeTimeZone`` object in real UTC.
+
+    ``dateTime`` carries no offset of its own, so an offset-bearing input must
+    be *converted* rather than relabelled -- pairing ``14:00:00-07:00`` with
+    ``timeZone: "UTC"`` would otherwise book the event seven hours early. A
+    value with no offset is taken as UTC.
+    """
+    return {
+        "dateTime": _parse_utc(value, label).strftime("%Y-%m-%dT%H:%M:%S"),
+        "timeZone": "UTC",
+    }
 
 
 
@@ -164,8 +179,8 @@ def create_event(
     base = _base_path(user_id)
     event_body: dict = {
         "subject": subject,
-        "start": {"dateTime": start_iso, "timeZone": "UTC"},
-        "end": {"dateTime": end_iso, "timeZone": "UTC"},
+        "start": _graph_datetime(start_iso, "start_iso"),
+        "end": _graph_datetime(end_iso, "end_iso"),
         "isAllDay": is_all_day,
     }
     if attendees:
@@ -218,9 +233,9 @@ def update_event(
     if subject is not None:
         update["subject"] = subject
     if start_iso is not None:
-        update["start"] = {"dateTime": start_iso, "timeZone": "UTC"}
+        update["start"] = _graph_datetime(start_iso, "start_iso")
     if end_iso is not None:
-        update["end"] = {"dateTime": end_iso, "timeZone": "UTC"}
+        update["end"] = _graph_datetime(end_iso, "end_iso")
     if attendees is not None:
         update["attendees"] = [
             {"emailAddress": {"address": email}, "type": "required"}
@@ -366,8 +381,8 @@ def find_meeting_times(
         body["timeConstraint"] = {
             "timeslots": [
                 {
-                    "start": {"dateTime": start_iso, "timeZone": "UTC"},
-                    "end": {"dateTime": end_iso, "timeZone": "UTC"},
+                    "start": _graph_datetime(start_iso, "start_iso"),
+                    "end": _graph_datetime(end_iso, "end_iso"),
                 }
             ]
         }
@@ -396,8 +411,8 @@ def get_schedule(
     client = GraphClient(account_id)
     body = {
         "schedules": emails,
-        "startTime": {"dateTime": start_iso, "timeZone": "UTC"},
-        "endTime": {"dateTime": end_iso, "timeZone": "UTC"},
+        "startTime": _graph_datetime(start_iso, "start_iso"),
+        "endTime": _graph_datetime(end_iso, "end_iso"),
     }
     result = client.request("POST", "/me/calendar/getSchedule", json_body=body) or {}
     items = result.get("value") or []

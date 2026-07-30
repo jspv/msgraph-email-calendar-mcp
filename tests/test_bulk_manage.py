@@ -9,12 +9,15 @@ These cover the two behaviours the rewrite guarantees:
 """
 from __future__ import annotations
 
+from datetime import datetime
+
 from unittest.mock import patch
 
 import pytest
 
 from msgraph_mcp.errors import GraphRequestError
-from msgraph_mcp.mail import bulk_manage_messages_multi_pass
+from msgraph_mcp.mail import _matches_filters, bulk_manage_messages_multi_pass
+from msgraph_mcp.models import MailMessageSummary
 
 
 def _msg(i: int, dt: str) -> dict:
@@ -162,6 +165,112 @@ class TestCollectThenAct:
         gone = [r for r in result["results"] if r.get("status") == "already_gone"]
         assert len(gone) == 1
         assert gone[0]["message_id"] == "m1"
+
+
+class TestShortPageWithNextLink:
+    """A short page is only the folder end when Graph says there is no more.
+
+    Graph may return fewer items than ``$top`` while still emitting
+    ``@odata.nextLink``. Treating that as the folder end would report
+    ``truncated=False`` on an incomplete scan -- the one field callers are
+    told they can trust as a true folder total.
+    """
+
+    def _paged_request(self, pages: list[dict]):
+        page_iter = iter(pages)
+
+        def _request(method, path, *, params=None, json_body=None):
+            if method == "GET" and path.endswith("/messages"):
+                return next(page_iter, {"value": []})
+            if method == "GET":
+                return {"totalItemCount": 3}
+            return {"id": "moved"}
+
+        return _request
+
+    @patch("msgraph_mcp.mail.GraphClient")
+    def test_scan_continues_past_a_short_page_carrying_next_link(self, MockClient):
+        MockClient.return_value.request.side_effect = self._paged_request([
+            {
+                "value": [_msg(1, "2026-01-03T00:00:00Z")],
+                "@odata.nextLink": "https://graph.microsoft.com/v1.0/me/messages?$skip=1",
+            },
+            {"value": [_msg(2, "2026-01-02T00:00:00Z"), _msg(3, "2026-01-01T00:00:00Z")]},
+        ])
+
+        result = bulk_manage_messages_multi_pass(folder="inbox", action="delete", dry_run=True)
+
+        assert result["scanned"] == 3
+        assert result["passes"] == 2
+        assert result["truncated"] is False
+        assert result["stop_reason"] == "folder_exhausted"
+
+    @patch("msgraph_mcp.mail.GraphClient")
+    def test_empty_page_with_next_link_stalls_rather_than_claiming_exhausted(self, MockClient):
+        # Nothing to advance the cursor with, but Graph says more exists:
+        # report the stall honestly instead of a false folder total.
+        MockClient.return_value.request.side_effect = self._paged_request([
+            {
+                "value": [],
+                "@odata.nextLink": "https://graph.microsoft.com/v1.0/me/messages?$skip=1",
+            },
+        ])
+
+        result = bulk_manage_messages_multi_pass(folder="inbox", action="delete", dry_run=True)
+
+        assert result["truncated"] is True
+        assert result["stop_reason"] == "cursor_stalled"
+
+
+class TestReceivedAfterFilter:
+    """`received_after` accepts the date forms a caller actually types.
+
+    Graph always returns tz-aware ``receivedDateTime``; a bare date parses
+    naive, so the comparison has to normalise both sides rather than trusting
+    the caller to supply an offset.
+    """
+
+    def _summary(self, received: str = "2026-07-29T12:00:00Z") -> MailMessageSummary:
+        return MailMessageSummary(id="m1", subject="hi", received_datetime=received)
+
+    def test_bare_date_is_treated_as_utc_midnight(self):
+        assert _matches_filters(self._summary(), received_after="2026-01-01") is True
+
+    def test_bare_date_excludes_older_messages(self):
+        older = self._summary("2025-12-31T23:00:00Z")
+        assert _matches_filters(older, received_after="2026-01-01") is False
+
+    def test_offset_aware_cutoff_still_works(self):
+        # 2026-07-29T06:00-07:00 == 13:00Z, so a 12:00Z message is older.
+        message = self._summary("2026-07-29T12:00:00Z")
+        assert _matches_filters(message, received_after="2026-07-29T06:00:00-07:00") is False
+
+    @patch("msgraph_mcp.mail.GraphClient")
+    def test_bulk_scan_accepts_a_bare_date(self, MockClient):
+        request, _ = _fake_request(
+            [[_msg(1, "2026-01-02T00:00:00Z"), _msg(2, "2025-06-01T00:00:00Z")]],
+            total=2,
+        )
+        MockClient.return_value.request.side_effect = request
+
+        result = bulk_manage_messages_multi_pass(
+            folder="inbox", action="delete", received_after="2026-01-01", dry_run=True
+        )
+
+        assert result["scanned"] == 2
+        assert result["matched"] == 1
+
+    def test_naive_datetime_cutoff_is_normalised(self):
+        # A caller passing a pre-parsed datetime can hand over a naive one;
+        # it must not reach the comparison unnormalised.
+        cutoff = datetime(2026, 1, 1)
+        assert _matches_filters(self._summary(), received_after=cutoff) is True
+
+    def test_rejects_malformed_cutoff_up_front(self):
+        with pytest.raises(ValueError, match="received_after must be an ISO-8601 datetime"):
+            bulk_manage_messages_multi_pass(
+                folder="inbox", action="delete", received_after="last tuesday", dry_run=True
+            )
 
 
 class TestValidation:

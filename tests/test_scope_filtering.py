@@ -11,6 +11,8 @@ import asyncio
 import importlib
 from dataclasses import replace
 
+from unittest.mock import patch
+
 import pytest
 
 from msgraph_mcp import config, tools
@@ -99,3 +101,53 @@ class TestScopeFiltering:
     def test_people_scope_gates_search_people(self):
         assert "search_people" in _registered_tool_names(("People.Read",))
         assert "search_people" not in _registered_tool_names(("Mail.ReadWrite",))
+
+
+class TestManageDraftScopeGuard:
+    """`manage_draft` spans two scopes: updating needs write, sending needs send.
+
+    It stays registered under either scope so a send-only deployment can still
+    dispatch a draft, but the update path has to refuse rather than issue a
+    request the token cannot satisfy.
+    """
+
+    def _call_manage_draft(self, scopes, **kwargs):
+        original = config.settings
+        config.settings = replace(original, scopes=tuple(scopes))
+        try:
+            importlib.reload(tools)
+            return tools.manage_draft(**kwargs)
+        finally:
+            config.settings = original
+            importlib.reload(tools)
+
+    def test_registered_under_send_only(self):
+        assert "manage_draft" in _registered_tool_names(("Mail.Send",))
+
+    def test_registered_under_write_only(self):
+        assert "manage_draft" in _registered_tool_names(("Mail.ReadWrite",))
+
+    def test_update_refused_without_write_scope(self):
+        # Patched so a regressed guard fails the assertion rather than firing a
+        # real Graph request.
+        with patch("msgraph_mcp.mail.update_draft") as update:
+            with pytest.raises(ValueError, match="Mail.ReadWrite"):
+                self._call_manage_draft(
+                    ("Mail.Send",), message_id="draft-1", subject="new subject"
+                )
+        update.assert_not_called()
+
+    def test_update_allowed_with_write_scope(self):
+        with patch("msgraph_mcp.mail.update_draft", return_value={"ok": True}) as update:
+            self._call_manage_draft(
+                ("Mail.ReadWrite",), message_id="draft-1", subject="new subject"
+            )
+        update.assert_called_once()
+
+    def test_send_only_scope_can_still_send(self):
+        with patch("msgraph_mcp.mail.send_draft", return_value={"ok": True}) as send:
+            result = self._call_manage_draft(
+                ("Mail.Send",), message_id="draft-1", send=True
+            )
+        assert result["sent"] is True
+        send.assert_called_once()

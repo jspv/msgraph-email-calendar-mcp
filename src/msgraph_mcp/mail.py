@@ -18,6 +18,7 @@ from .models import (
     _address_label,
     _clean_text_snippet,
     _format_datetime_label,
+    _parse_utc,
     _recipient_labels,
 )
 
@@ -119,12 +120,10 @@ def _validate_iso(value: str) -> str:
     """Validate that *value* is an ISO-8601 datetime and return it unchanged.
 
     Parsing also guards the ``$filter`` interpolation: a value that parses as a
-    datetime cannot smuggle OData operators.
+    datetime cannot smuggle OData operators. The caller's exact spelling is
+    returned so the filter carries the offset they asked for.
     """
-    try:
-        datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except (ValueError, AttributeError) as exc:
-        raise ValueError(f"since must be an ISO-8601 datetime, got {value!r}") from exc
+    _parse_utc(value, "since")
     return value
 
 
@@ -345,10 +344,15 @@ def _matches_filters(
     *,
     sender_contains: str | None = None,
     subject_contains: str | None = None,
-    received_after: str | None = None,
+    received_after: str | datetime | None = None,
     unread_only: bool = False,
 ) -> bool:
-    """Return True if *item* passes all specified filter criteria."""
+    """Return True if *item* passes all specified filter criteria.
+
+    *received_after* may be an ISO-8601 string or an already-parsed datetime;
+    callers scanning a large folder should pre-parse once (see
+    ``bulk_manage_messages_multi_pass``) rather than re-parsing per message.
+    """
     sender_label = (item.sender_label or "").lower()
     subject = (item.subject or "").lower()
 
@@ -359,89 +363,17 @@ def _matches_filters(
     if unread_only and item.is_read:
         return False
     if received_after and item.received_datetime:
-        cutoff = datetime.fromisoformat(received_after.replace("Z", "+00:00"))
-        actual = datetime.fromisoformat(item.received_datetime.replace("Z", "+00:00"))
+        cutoff = (
+            received_after
+            if isinstance(received_after, datetime)
+            else _parse_utc(received_after, "received_after")
+        )
+        if cutoff.tzinfo is None:
+            cutoff = cutoff.replace(tzinfo=timezone.utc)
+        actual = _parse_utc(item.received_datetime, "receivedDateTime")
         if actual < cutoff:
             return False
     return True
-
-
-
-def bulk_manage_messages(
-    account_id: str | None = None,
-    *,
-    folder: str = "inbox",
-    sender_contains: str | None = None,
-    subject_contains: str | None = None,
-    received_after: str | None = None,
-    unread_only: bool = False,
-    action: str = "delete",
-    destination: str | None = None,
-    limit: int = 100,
-    dry_run: bool = True,
-) -> dict[str, object]:
-    """Single-pass bulk operation on filtered messages.
-
-    When *dry_run* is True (the default), returns a preview of matching
-    messages without performing any action.
-    """
-    candidates = list_messages(account_id=account_id, folder=folder, limit=limit)
-    matches = [
-        item for item in candidates
-        if _matches_filters(
-            item,
-            sender_contains=sender_contains,
-            subject_contains=subject_contains,
-            received_after=received_after,
-            unread_only=unread_only,
-        )
-    ]
-
-    preview = [
-        {
-            "id": item.id,
-            "subject": item.subject,
-            "sender": item.sender_label,
-            "received": item.received_datetime,
-            "summary": item.summary,
-        }
-        for item in matches
-    ]
-
-    if dry_run:
-        return {
-            "ok": True,
-            "dry_run": True,
-            "action": action,
-            "match_count": len(matches),
-            "matches": preview,
-        }
-
-    results: list[dict[str, object]] = []
-    for item in matches:
-        if action == "delete":
-            result = delete_message(account_id, item.id, permanent=False)
-        elif action == "mark_read":
-            result = mark_message_read(account_id, item.id, True)
-        elif action == "mark_unread":
-            result = mark_message_read(account_id, item.id, False)
-        elif action == "move":
-            if not destination:
-                raise ValueError("destination is required when action='move'")
-            result = move_message(account_id, item.id, destination)
-        else:
-            raise ValueError("action must be one of: delete, move, mark_read, mark_unread")
-        result["subject"] = item.subject
-        result["sender"] = item.sender_label
-        results.append(result)
-
-    return {
-        "ok": True,
-        "dry_run": False,
-        "action": action,
-        "match_count": len(matches),
-        "results": results,
-    }
 
 
 
@@ -526,6 +458,12 @@ def _collect_matches(
             "GET", f"/me/mailFolders/{folder_id}/messages", params=params
         ) or {}
         items = payload.get("value", [])
+        # Graph may return fewer items than ``$top`` and still have more to
+        # give, signalled by ``@odata.nextLink``. A short page is therefore
+        # only the folder end when Graph also says there is nothing after it;
+        # trusting page length alone would report a partial scan as a true
+        # folder total.
+        has_more = bool(payload.get("@odata.nextLink"))
         passes += 1
 
         new_in_page = 0
@@ -544,7 +482,7 @@ def _collect_matches(
             if _matches_filters(summary, **filter_kwargs):
                 matches.append(summary)
 
-        if len(items) < top:
+        if len(items) < top and not has_more:
             exhausted = True
             stop_reason = "folder_exhausted"
             break
@@ -624,7 +562,11 @@ def bulk_manage_messages_multi_pass(
     filter_kwargs: dict[str, object] = {
         "sender_contains": sender_contains,
         "subject_contains": subject_contains,
-        "received_after": received_after,
+        # Parsed once up front so a malformed cutoff fails before any Graph
+        # call, and so a whole-folder scan does not re-parse it per message.
+        "received_after": (
+            _parse_utc(received_after, "received_after") if received_after else None
+        ),
         "unread_only": unread_only,
     }
 
@@ -1002,6 +944,18 @@ def _build_from(send_as: str | None) -> dict | None:
     return {"emailAddress": {"address": send_as}}
 
 
+def _draft_id(payload: dict | None) -> str:
+    """Pull the id out of a freshly created draft, or fail with a typed error.
+
+    Graph is expected to echo the created draft, but an empty body would
+    otherwise surface as a bare ``KeyError`` from deep inside a dry-run.
+    """
+    draft_id = (payload or {}).get("id")
+    if not draft_id:
+        raise GraphRequestError("Microsoft Graph did not return a draft id")
+    return draft_id
+
+
 def _draft_preview(payload: dict) -> DraftPreview:
     """Extract a DraftPreview from a Graph message payload."""
     from_addr = ((payload.get("from") or {}).get("emailAddress") or {}).get("address")
@@ -1060,9 +1014,13 @@ def send_message(
 
     if dry_run:
         draft = client.request("POST", "/me/messages", json_body=message_body) or {}
-        preview = _draft_preview(draft)
-        preview.message = "Dry-run: message NOT sent. Set dry_run=False to send."
-        client.request("DELETE", f"/me/messages/{draft['id']}")
+        draft_id = _draft_id(draft)
+        try:
+            preview = _draft_preview(draft)
+            preview.message = "Dry-run: message NOT sent. Set dry_run=False to send."
+        finally:
+            # The preview draft is scratch state; never leave it in Drafts.
+            client.request("DELETE", f"/me/messages/{draft_id}")
         return {"ok": True, "dry_run": True, "preview": preview.model_dump()}
 
     client.request("POST", "/me/sendMail", json_body={"message": message_body})
@@ -1092,18 +1050,21 @@ def reply_to_message(
     if dry_run:
         create_action = "createReplyAll" if reply_all else "createReply"
         draft = client.request("POST", f"/me/messages/{message_id}/{create_action}") or {}
-        update_body: dict = {"body": {"contentType": "text", "content": body}}
-        from_field = _build_from(send_as)
-        if from_field:
-            update_body["from"] = from_field
-        client.request("PATCH", f"/me/messages/{draft['id']}", json_body=update_body)
-        refreshed = client.request(
-            "GET", f"/me/messages/{draft['id']}",
-            params={"$select": "id,subject,from,toRecipients,ccRecipients,bccRecipients,bodyPreview"},
-        ) or draft
-        preview = _draft_preview(refreshed)
-        preview.message = "Dry-run: reply NOT sent. Set dry_run=False to send."
-        client.request("DELETE", f"/me/messages/{draft['id']}")
+        draft_id = _draft_id(draft)
+        try:
+            update_body: dict = {"body": {"contentType": "text", "content": body}}
+            from_field = _build_from(send_as)
+            if from_field:
+                update_body["from"] = from_field
+            client.request("PATCH", f"/me/messages/{draft_id}", json_body=update_body)
+            refreshed = client.request(
+                "GET", f"/me/messages/{draft_id}",
+                params={"$select": "id,subject,from,toRecipients,ccRecipients,bccRecipients,bodyPreview"},
+            ) or draft
+            preview = _draft_preview(refreshed)
+            preview.message = "Dry-run: reply NOT sent. Set dry_run=False to send."
+        finally:
+            client.request("DELETE", f"/me/messages/{draft_id}")
         return {"ok": True, "dry_run": True, "preview": preview.model_dump()}
 
     json_body: dict = {"comment": body}
@@ -1128,20 +1089,23 @@ def forward_message(
 
     if dry_run:
         draft = client.request("POST", f"/me/messages/{message_id}/createForward") or {}
-        update_body: dict = {"toRecipients": _build_recipients(to)}
-        if body:
-            update_body["body"] = {"contentType": "text", "content": body}
-        from_field = _build_from(send_as)
-        if from_field:
-            update_body["from"] = from_field
-        client.request("PATCH", f"/me/messages/{draft['id']}", json_body=update_body)
-        refreshed = client.request(
-            "GET", f"/me/messages/{draft['id']}",
-            params={"$select": "id,subject,from,toRecipients,ccRecipients,bccRecipients,bodyPreview"},
-        ) or draft
-        preview = _draft_preview(refreshed)
-        preview.message = "Dry-run: forward NOT sent. Set dry_run=False to send."
-        client.request("DELETE", f"/me/messages/{draft['id']}")
+        draft_id = _draft_id(draft)
+        try:
+            update_body: dict = {"toRecipients": _build_recipients(to)}
+            if body:
+                update_body["body"] = {"contentType": "text", "content": body}
+            from_field = _build_from(send_as)
+            if from_field:
+                update_body["from"] = from_field
+            client.request("PATCH", f"/me/messages/{draft_id}", json_body=update_body)
+            refreshed = client.request(
+                "GET", f"/me/messages/{draft_id}",
+                params={"$select": "id,subject,from,toRecipients,ccRecipients,bccRecipients,bodyPreview"},
+            ) or draft
+            preview = _draft_preview(refreshed)
+            preview.message = "Dry-run: forward NOT sent. Set dry_run=False to send."
+        finally:
+            client.request("DELETE", f"/me/messages/{draft_id}")
         return {"ok": True, "dry_run": True, "preview": preview.model_dump()}
 
     json_body: dict = {
