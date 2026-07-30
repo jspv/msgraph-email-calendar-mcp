@@ -10,6 +10,7 @@ manager.  If present, it is used directly and MSAL is bypassed entirely.
 
 from __future__ import annotations
 
+import atexit
 import os
 import re
 import time
@@ -23,6 +24,39 @@ from .config import settings
 from .errors import GraphRequestError
 
 _SAFE_ID_PATTERN = re.compile(r"^[A-Za-z0-9_\-=+.]+$")
+
+# One connection pool for the whole process. A client per request would mean a
+# fresh TCP + TLS handshake per request, and the workload where that hurts is
+# ``bulk_manage_messages_multi_pass``: its action loop calls ``delete_message``
+# (or ``move_message``) once per message, each of which builds its own
+# ``GraphClient``. Pooling inside the instance would therefore save nothing in
+# the one case that needs it -- the pool has to outlive the instance.
+#
+# ``httpx.Client`` is safe for concurrent use and evicts broken connections from
+# its pool on its own, so sharing does not introduce shared failure state.
+_http: httpx.Client | None = None
+
+
+def _http_client() -> httpx.Client:
+    """Return the shared HTTP client, building it on first use."""
+    global _http
+    if _http is None or _http.is_closed:
+        _http = httpx.Client(
+            timeout=settings.timeout_seconds,
+            limits=httpx.Limits(max_keepalive_connections=10, max_connections=20),
+        )
+    return _http
+
+
+def close_http_client() -> None:
+    """Dispose of the shared client. The next request builds a fresh one."""
+    global _http
+    if _http is not None:
+        _http.close()
+        _http = None
+
+
+atexit.register(close_http_client)
 
 
 def validate_path_segment(value: str, label: str = "id") -> str:
@@ -101,49 +135,49 @@ class GraphClient:
             headers["Prefer"] = 'outlook.body-content-type="text"'
 
         normalized_path = self._normalize_path(path)
-        with httpx.Client(timeout=settings.timeout_seconds) as client:
-            retries = 3
-            for attempt in range(retries):
-                try:
-                    response = client.request(
-                        method=method,
-                        url=f"{settings.graph_base_url}{normalized_path}" if normalized_path.startswith("/") else normalized_path,
-                        headers=headers,
-                        params=params,
-                        json=json_body,
-                    )
-                    if response.status_code == 429 and attempt < retries - 1:
-                        try:
-                            retry_after = int(response.headers.get("Retry-After", "2"))
-                        except (ValueError, TypeError):
-                            retry_after = 2
-                        time.sleep(min(retry_after, 10))
-                        continue
-                    if response.status_code >= 500 and attempt < retries - 1:
-                        time.sleep(2 ** attempt)
-                        continue
-                    response.raise_for_status()
-                    if not response.content:
-                        return None
-                    return response.json()
-                except httpx.HTTPStatusError as exc:
-                    status = exc.response.status_code
-                    if status in {429, 500, 502, 503, 504} and attempt < retries - 1:
-                        time.sleep(2 ** attempt)
-                        continue
-                    detail = "Microsoft Graph request failed"
+        client = _http_client()
+        retries = 3
+        for attempt in range(retries):
+            try:
+                response = client.request(
+                    method=method,
+                    url=f"{settings.graph_base_url}{normalized_path}" if normalized_path.startswith("/") else normalized_path,
+                    headers=headers,
+                    params=params,
+                    json=json_body,
+                )
+                if response.status_code == 429 and attempt < retries - 1:
                     try:
-                        payload = exc.response.json()
-                        error = payload.get("error", {})
-                        detail = error.get("message") or error.get("code") or detail
-                    except Exception:
-                        pass
-                    raise GraphRequestError(detail, status_code=status) from exc
-                except httpx.HTTPError as exc:
-                    if attempt < retries - 1:
-                        time.sleep(2 ** attempt)
-                        continue
-                    raise GraphRequestError("Network error while calling Microsoft Graph") from exc
+                        retry_after = int(response.headers.get("Retry-After", "2"))
+                    except (ValueError, TypeError):
+                        retry_after = 2
+                    time.sleep(min(retry_after, 10))
+                    continue
+                if response.status_code >= 500 and attempt < retries - 1:
+                    time.sleep(2 ** attempt)
+                    continue
+                response.raise_for_status()
+                if not response.content:
+                    return None
+                return response.json()
+            except httpx.HTTPStatusError as exc:
+                status = exc.response.status_code
+                if status in {429, 500, 502, 503, 504} and attempt < retries - 1:
+                    time.sleep(2 ** attempt)
+                    continue
+                detail = "Microsoft Graph request failed"
+                try:
+                    payload = exc.response.json()
+                    error = payload.get("error", {})
+                    detail = error.get("message") or error.get("code") or detail
+                except Exception:
+                    pass
+                raise GraphRequestError(detail, status_code=status) from exc
+            except httpx.HTTPError as exc:
+                if attempt < retries - 1:
+                    time.sleep(2 ** attempt)
+                    continue
+                raise GraphRequestError("Network error while calling Microsoft Graph") from exc
         raise GraphRequestError("Microsoft Graph request failed after retries")
 
     def paginate(

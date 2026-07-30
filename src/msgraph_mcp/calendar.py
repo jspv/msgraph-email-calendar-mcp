@@ -40,6 +40,11 @@ def _graph_datetime(value: str, label: str) -> dict[str, str]:
 
 
 
+def _attendees_phrase(count: int) -> str:
+    """``"1 attendee"`` / ``"3 attendees"`` -- these strings are read by humans."""
+    return f"{count} attendee" if count == 1 else f"{count} attendees"
+
+
 def _base_path(user_id: str | None) -> str:
     """Return ``/me`` or ``/users/{user_id}`` as the request base."""
     if user_id:
@@ -173,8 +178,15 @@ def create_event(
     is_all_day: bool = False,
     calendar_id: str | None = None,
     user_id: str | None = None,
+    dry_run: bool = True,
 ) -> dict:
-    """Create a new calendar event.  Pass *user_id* for shared calendars."""
+    """Create a new calendar event.  Pass *user_id* for shared calendars.
+
+    Dry-run by default: Graph mails invitations the moment an event with
+    attendees is created, so there is no undo. Unlike the mail preview -- which
+    has to create a real draft to see Graph's rendering -- the event body is
+    fully known here, so the preview costs no Graph call at all.
+    """
     client = GraphClient(account_id)
     base = _base_path(user_id)
     event_body: dict = {
@@ -199,9 +211,26 @@ def create_event(
     else:
         path = f"{base}/calendar/events"
 
+    if dry_run:
+        return {
+            "ok": True,
+            "dry_run": True,
+            "action": "create",
+            "preview": {"path": path, "event": event_body},
+            "message": (
+                "Dry-run: event NOT created. Set dry_run=False to create it"
+                + (
+                    f" and invite {_attendees_phrase(len(attendees))}."
+                    if attendees
+                    else "."
+                )
+            ),
+        }
+
     result = client.request("POST", path, json_body=event_body) or {}
     return {
         "ok": True,
+        "dry_run": False,
         "event": {
             "id": result.get("id"),
             "subject": result.get("subject"),
@@ -224,8 +253,14 @@ def update_event(
     location: str | None = None,
     is_all_day: bool | None = None,
     user_id: str | None = None,
+    dry_run: bool = True,
 ) -> dict:
-    """Update an existing calendar event.  Pass *user_id* for shared calendars."""
+    """Update an existing calendar event.  Pass *user_id* for shared calendars.
+
+    Dry-run by default: edits notify attendees. The preview spends one GET so it
+    can show current-versus-proposed rather than a bare patch dict -- knowing a
+    field is about to become "Q4 Planning" is only useful next to what it is now.
+    """
     validate_path_segment(event_id, "event_id")
     client = GraphClient(account_id)
     base = _base_path(user_id)
@@ -248,9 +283,39 @@ def update_event(
     if is_all_day is not None:
         update["isAllDay"] = is_all_day
 
+    if dry_run:
+        # If this GET fails the error propagates rather than degrading to a
+        # partial preview: a caller who cannot read the event cannot patch it
+        # either, so there is no half-state worth inventing.
+        current = get_event(account_id, event_id, user_id)
+        return {
+            "ok": True,
+            "dry_run": True,
+            "action": "update",
+            "event_id": event_id,
+            "preview": {
+                "current": {
+                    "subject": current.subject,
+                    "time_label": current.time_label,
+                    "location": current.location_label,
+                    "attendee_count": len(current.attendees),
+                },
+                "changes": update,
+            },
+            "message": (
+                "Dry-run: event NOT updated. Set dry_run=False to apply"
+                + (
+                    f" and notify {_attendees_phrase(len(current.attendees))}."
+                    if current.attendees
+                    else "."
+                )
+            ),
+        }
+
     result = client.request("PATCH", f"{base}/events/{event_id}", json_body=update) or {}
     return {
         "ok": True,
+        "dry_run": False,
         "event": {
             "id": result.get("id"),
             "subject": result.get("subject"),
@@ -269,20 +334,62 @@ def delete_event(
     event_id: str,
     cancel_message: str | None = None,
     user_id: str | None = None,
+    dry_run: bool = True,
 ) -> dict:
-    """Delete or cancel a calendar event.  Pass *user_id* for shared calendars."""
+    """Delete or cancel a calendar event.  Pass *user_id* for shared calendars.
+
+    Dry-run by default, and the preview spends one GET to name the event: an
+    opaque id tells a reviewing human nothing about the meeting they are about
+    to destroy.
+
+    The two paths differ in a way the API shape understates -- with
+    *cancel_message* Graph cancels and **notifies attendees**; without it the
+    event is hard-deleted and **nobody is told**. The preview says which.
+    """
     validate_path_segment(event_id, "event_id")
     client = GraphClient(account_id)
     base = _base_path(user_id)
+
+    if dry_run:
+        current = get_event(account_id, event_id, user_id)
+        attendee_count = len(current.attendees)
+        if cancel_message:
+            consequence = (
+                f"cancel it and notify {_attendees_phrase(attendee_count)}."
+                if attendee_count
+                else "cancel it."
+            )
+        else:
+            consequence = (
+                f"delete it without notifying its {_attendees_phrase(attendee_count)}."
+                if attendee_count
+                else "delete it without notifying anyone."
+            )
+        return {
+            "ok": True,
+            "dry_run": True,
+            "action": "cancel" if cancel_message else "delete",
+            "event_id": event_id,
+            "preview": {
+                "subject": current.subject,
+                "time_label": current.time_label,
+                "location": current.location_label,
+                "attendee_count": attendee_count,
+                "organizer": current.organizer_label,
+                "is_cancelled": current.is_cancelled,
+            },
+            "message": f"Dry-run: event NOT removed. Set dry_run=False to {consequence}",
+        }
+
     if cancel_message:
         client.request(
             "POST",
             f"{base}/events/{event_id}/cancel",
             json_body={"comment": cancel_message},
         )
-        return {"ok": True, "event_id": event_id, "action": "cancelled"}
+        return {"ok": True, "dry_run": False, "event_id": event_id, "action": "cancelled"}
     client.request("DELETE", f"{base}/events/{event_id}")
-    return {"ok": True, "event_id": event_id, "action": "deleted"}
+    return {"ok": True, "dry_run": False, "event_id": event_id, "action": "deleted"}
 
 
 def respond_to_event(

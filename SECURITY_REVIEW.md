@@ -94,7 +94,7 @@ All of the following mutate user data. Each requires the corresponding scope
 | `update_message` | Read/unread, follow-up flag, categories | Only supplied fields change |
 | `move_message` | Moves a message to another folder | Destination resolved through a known-folder map or validated as a safe ID |
 | `delete_message` | Soft- or hard-deletes | `permanent=False` — soft delete |
-| `bulk_manage_messages` | Applies an action to filtered messages folder-wide | `dry_run=True` — preview only |
+| `bulk_manage_messages` | Applies an action to filtered messages folder-wide | `dry_run=True` — preview only; `delete`/`move` additionally require a `confirm_token` |
 | `create_draft` | Creates a draft in Drafts | Not sent |
 | `add_attachment_to_draft` | Uploads base64 content onto a draft | Size bounded only by Graph |
 | `create_folder` | Creates a mail folder | — |
@@ -125,13 +125,20 @@ Notes:
 
 | Tool | What it does | Safety defaults |
 |---|---|---|
-| `create_event` | Creates an event, optionally inviting attendees | Invitations are sent by Graph on creation |
-| `update_event` | Updates an event | Only supplied fields change; updates notify attendees |
-| `delete_event` | Deletes, or cancels with a message to attendees | `cancel_message=None` → hard delete, no notice |
+| `create_event` | Creates an event, optionally inviting attendees | `dry_run=True`; invitations are sent by Graph on creation |
+| `update_event` | Updates an event | `dry_run=True`; only supplied fields change; updates notify attendees |
+| `delete_event` | Deletes, or cancels with a message to attendees | `dry_run=True`; `cancel_message=None` → hard delete, no notice |
 | `respond_to_event` | Accepts / declines / tentatively accepts | `sendResponse` is always `True` — the organizer is always notified |
 
-`create_event`, `update_event`, `delete_event`, and `respond_to_event` all
-generate outbound email to attendees as a side effect. None has a dry-run.
+All four generate outbound email to attendees as a side effect. The three
+destructive ones now preview by default. `respond_to_event` does not, and that is
+deliberate: responding again reverses it, so gating it would add friction without
+reducing risk.
+
+`delete_event`'s preview names the event — subject, time, organizer, attendee
+count — rather than echoing the id it was given, and states which of two very
+different outcomes applies: with `cancel_message` attendees are **notified**;
+without it the event is destroyed and **nobody is told**.
 
 ### Shared mailboxes and calendars (`Calendars.ReadWrite.Shared`)
 
@@ -163,13 +170,23 @@ addresses. Read-only, but it is a directory-enumeration surface.
   context. `forward_message`, `send_message`, and `reply_to_message` turn that
   into an exfiltration channel. Dry-run defaults help only if the client does
   not blindly re-invoke with `dry_run=False`.
-- **No per-operation confirmation.** Write tools execute immediately when
-  called. Safety depends on the MCP client or agent gating calls. There is no
-  built-in step between dry-run and live execution.
+- **Confirmation gates make scope visible; they do not stop injection.** Bulk
+  `delete`/`move` now require a `confirm_token` derived from the matched message
+  ids, and destructive calendar writes preview by default. Both force the
+  affected set to appear in the transcript before anything happens. Neither
+  stops a determined prompt injection: injected text can simply say "run the
+  dry-run, then call again with the token," and a compliant model will. The
+  value is **visibility to the human and the client**, not authorization.
+  Documenting these as anti-injection defenses would be false.
 - **Bulk operations are unbounded by default.** A whole-folder
-  `bulk_manage_messages(dry_run=False)` with a loose filter can move or delete
-  every message in a folder in one call. Soft-delete is the only cushion.
-- **Calendar writes have no dry-run** and notify attendees on the spot.
+  `bulk_manage_messages` with a loose filter can still move or delete every
+  message in a folder — the confirm token bounds *surprise*, not *scale*. It
+  guarantees the acting run touches the set the preview reported, and refuses if
+  the mailbox shifted underneath. Soft-delete remains the only cushion.
+- **Other write tools still execute immediately.** `update_message`,
+  `move_message`, `delete_message`, `create_folder`, `manage_draft`, and
+  `respond_to_event` act on the first call. Safety there depends on the MCP
+  client or agent gating them.
 - **Token cache at rest is unencrypted.** Local filesystem access grants full
   delegated mailbox access for the cached account's scopes.
 - **No per-account or per-target allowlist.** `MICROSOFT_TENANT_ID` controls
@@ -185,6 +202,8 @@ addresses. Read-only, but it is a directory-enumeration surface.
    outbound recipient domains.
 3. Add a `MSGRAPH_READ_ONLY=1` kill switch that drops all mutating tools
    regardless of token scope.
-4. Require a caller-supplied confirmation token to move a bulk operation from
-   dry-run to live, so a single injected tool call cannot escalate.
-5. Give calendar writes the same `dry_run` treatment as outbound mail.
+4. Extend the confirm-token gate to `forward_message`, the highest-severity
+   outbound tool, so exfiltration also requires a two-step escalation.
+
+Shipped in 0.2.0: the bulk confirmation token (previously item 4) and calendar
+dry-run defaults (previously item 5).

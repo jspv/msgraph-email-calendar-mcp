@@ -120,6 +120,7 @@ def cmd_bulk_manage_messages(args: argparse.Namespace) -> int:
             destination=args.destination,
             scan_limit=args.limit,
             dry_run=not args.apply,
+            confirm_token=args.confirm_token,
         )
     )
     return 0
@@ -223,6 +224,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Max messages to scan; omit to scan the entire folder",
     )
     bulk_manage.add_argument("--apply", action="store_true")
+    bulk_manage.add_argument(
+        "--confirm-token",
+        help="Token from a preceding dry run; required with --apply for delete/move",
+    )
     bulk_manage.set_defaults(func=cmd_bulk_manage_messages)
 
     list_calendars = subparsers.add_parser("list-calendars")

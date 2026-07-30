@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 from datetime import datetime, timezone
 
@@ -401,6 +402,30 @@ def _folder_total_count(client: GraphClient, folder_id: str) -> int | None:
     return payload.get("totalItemCount")
 
 
+#: Bulk actions that cannot be casually undone, and so require a confirm token.
+#: ``mark_read`` / ``mark_unread`` are excluded: they are trivially reversible,
+#: so gating them would be friction with no safety payoff.
+_GATED_BULK_ACTIONS = {"delete", "move"}
+
+
+def _confirm_token(action: str, destination: str | None, ids: list[str]) -> str:
+    """Derive the confirmation token for a specific matched set.
+
+    Bound to the *matched message ids* rather than to the filter arguments, so a
+    token can never authorise a set the caller did not actually see previewed.
+    Deriving it -- rather than storing it -- means no server state, no salt and
+    no clock, which keeps it valid across a Lambda cold start between the
+    preview call and the live one.
+
+    The count prefix is load-bearing: the server remembers nothing, so without it
+    a mismatch could only report "the set changed" and never "42 became 43". The
+    count is not a secret, and carrying it is what makes the error actionable.
+    """
+    payload = "|".join([action, destination or "", *sorted(ids)])
+    digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    return f"{len(ids)}-{digest[:12]}"
+
+
 def _collect_matches(
     client: GraphClient,
     folder_id: str,
@@ -514,6 +539,7 @@ def bulk_manage_messages_multi_pass(
     destination: str | None = None,
     scan_limit: int | None = None,
     dry_run: bool = True,
+    confirm_token: str | None = None,
 ) -> dict[str, object]:
     """Scan a folder newest-first and act on matching messages.
 
@@ -545,6 +571,12 @@ def bulk_manage_messages_multi_pass(
     In a live (non-dry-run) run, messages that a rule or another client moved
     or deleted between collection and action are reported as ``already_gone``
     rather than raised as errors.
+
+    ``delete`` and ``move`` additionally require *confirm_token*, the value
+    returned by a preceding dry-run. The live run re-derives the token from its
+    own scan and refuses if it differs, so a preview of 42 messages cannot be
+    used to act on a set that has since become something else. Reversible
+    actions (``mark_read`` / ``mark_unread``) need no token.
     """
     if scan_limit is not None and scan_limit < 1:
         raise ValueError("scan_limit must be a positive integer, or None to scan the whole folder")
@@ -593,6 +625,9 @@ def bulk_manage_messages_multi_pass(
         "stop_reason": collected["stop_reason"],
     }
 
+    matched_ids = [item.id for item in matches]
+    gated = action in _GATED_BULK_ACTIONS
+
     if dry_run:
         report["matches"] = [
             {
@@ -605,7 +640,28 @@ def bulk_manage_messages_multi_pass(
             for item in matches
         ]
         report["results"] = None
+        if gated:
+            # Only gated actions carry a token, so its presence is itself the
+            # signal that confirmation is required.
+            report["confirm_token"] = _confirm_token(action, destination, matched_ids)
         return report
+
+    if gated:
+        expected = _confirm_token(action, destination, matched_ids)
+        if not confirm_token:
+            raise ValueError(
+                f"Bulk {action} requires confirmation. Re-run with dry_run=True to "
+                f"review the {len(matched_ids)} matching message(s), then pass the "
+                f"confirm_token it returns. Current token: {expected}"
+            )
+        if confirm_token != expected:
+            previewed = confirm_token.split("-", 1)[0]
+            raise ValueError(
+                f"confirm_token does not match the current scan: it described "
+                f"{previewed} message(s), this scan matched {len(matched_ids)}. "
+                f"The mailbox is live, so re-check the preview before acting. "
+                f"Confirm with the new token: {expected}"
+            )
 
     results: list[dict[str, object]] = []
     acted = 0
