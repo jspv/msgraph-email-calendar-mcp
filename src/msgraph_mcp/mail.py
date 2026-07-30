@@ -86,10 +86,20 @@ def _sender_parts(payload: dict) -> tuple[str | None, str | None]:
 
 #: Columns selected for list-level message summaries. ``conversationId`` lets a
 #: client thread/group messages without a follow-up get_message per item.
+#:
+#: ``toRecipients``/``ccRecipients`` are requested for **every** folder, not just
+#: Sent Items. Restricting them to sent mail would drop the two signals that make
+#: them worth fetching on the Inbox: which alias a message was delivered to (when
+#: the owner uses a per-vendor address), and whether the owner was addressed
+#: directly or merely copied. That costs two extra arrays per row on a
+#: whole-folder scan; correct context beats a lighter page. If it ever does hurt,
+#: the answer is a leaner projection (addresses only), not dropping them.
 _SUMMARY_SELECT = (
     "id",
     "subject",
     "from",
+    "toRecipients",
+    "ccRecipients",
     "receivedDateTime",
     "isRead",
     "hasAttachments",
@@ -117,20 +127,24 @@ def _sanitize_select(fields: list[str]) -> list[str]:
     return clean
 
 
-def _validate_iso(value: str) -> str:
+def _validate_iso(value: str, label: str = "since") -> str:
     """Validate that *value* is an ISO-8601 datetime and return it unchanged.
 
     Parsing also guards the ``$filter`` interpolation: a value that parses as a
     datetime cannot smuggle OData operators. The caller's exact spelling is
     returned so the filter carries the offset they asked for.
     """
-    _parse_utc(value, "since")
+    _parse_utc(value, label)
     return value
 
 
 def _message_summary(item: dict) -> MailMessageSummary:
     sender_name, sender_email = _sender_parts(item)
     sender_label = _address_label(item.get("from"))
+    to_recipients = item.get("toRecipients") or []
+    cc_recipients = item.get("ccRecipients") or []
+    to_labels = _recipient_labels(to_recipients)
+    cc_labels = _recipient_labels(cc_recipients)
     received_datetime = item.get("receivedDateTime")
     received_label = _format_datetime_label(received_datetime)
     body_preview = item.get("bodyPreview")
@@ -145,6 +159,13 @@ def _message_summary(item: dict) -> MailMessageSummary:
     meta_bits = [bit for bit in [sender_label, received_label] if bit]
     if meta_bits:
         summary_parts.append("from " + " • ".join(meta_bits) if sender_label else " • ".join(meta_bits))
+    # Recipients go in the summary string so a model reading a list result sees
+    # them without inspecting fields -- the whole point on a Sent Items scan,
+    # where every row shares the same sender.
+    if to_labels:
+        summary_parts.append("to " + ", ".join(to_labels))
+    if cc_labels:
+        summary_parts.append("cc " + ", ".join(cc_labels))
     if status_bits:
         summary_parts.append(f"[{', '.join(status_bits)}]")
     if body_preview_clean:
@@ -157,6 +178,10 @@ def _message_summary(item: dict) -> MailMessageSummary:
         received_datetime=received_datetime,
         received_label=received_label,
         sender_label=sender_label,
+        to_recipients=to_recipients,
+        to_recipient_labels=to_labels,
+        cc_recipients=cc_recipients,
+        cc_recipient_labels=cc_labels,
         is_read=bool(item.get("isRead", False)),
         has_attachments=bool(item.get("hasAttachments", False)),
         conversation_id=item.get("conversationId"),
@@ -172,6 +197,7 @@ def list_messages(
     limit: int = 10,
     include_body_preview: bool = True,
     since: str | None = None,
+    until: str | None = None,
     fields: list[str] | None = None,
 ) -> list[MailMessageSummary]:
     """List recent messages from *folder*, newest first.
@@ -198,8 +224,13 @@ def list_messages(
         "$orderby": "receivedDateTime desc",
         "$select": ",".join(select_fields),
     }
+    date_clauses: list[str] = []
     if since is not None:
-        params["$filter"] = f"receivedDateTime ge {_validate_iso(since)}"
+        date_clauses.append(f"receivedDateTime ge {_validate_iso(since, 'since')}")
+    if until is not None:
+        date_clauses.append(f"receivedDateTime le {_validate_iso(until, 'until')}")
+    if date_clauses:
+        params["$filter"] = " and ".join(date_clauses)
     items = client.paginate(
         f"/me/mailFolders/{folder_id}/messages",
         params=params,
@@ -345,6 +376,7 @@ def _matches_filters(
     *,
     sender_contains: str | None = None,
     subject_contains: str | None = None,
+    recipient_contains: str | None = None,
     received_after: str | datetime | None = None,
     unread_only: bool = False,
 ) -> bool:
@@ -352,7 +384,14 @@ def _matches_filters(
 
     *received_after* may be an ISO-8601 string or an already-parsed datetime;
     callers scanning a large folder should pre-parse once (see
-    ``bulk_manage_messages_multi_pass``) rather than re-parsing per message.
+    ``bulk_manage_messages_multi_pass``) rather than re-parsing per message. It
+    is retained as a client-side check even though the scan now also bounds the
+    window server-side, so this function stays correct for callers that do not.
+
+    *recipient_contains* matches across **both** ``to`` and ``cc``. Splitting
+    them would force a caller who just wants "anything addressed to my vendor
+    alias" to make the same query twice; the raw ``to_recipients`` /
+    ``cc_recipients`` fields remain available when the distinction matters.
     """
     sender_label = (item.sender_label or "").lower()
     subject = (item.subject or "").lower()
@@ -361,6 +400,11 @@ def _matches_filters(
         return False
     if subject_contains and subject_contains.lower() not in subject:
         return False
+    if recipient_contains:
+        needle = recipient_contains.lower()
+        haystack = " ".join(item.to_recipient_labels + item.cc_recipient_labels).lower()
+        if needle not in haystack:
+            return False
     if unread_only and item.is_read:
         return False
     if received_after and item.received_datetime:
@@ -432,6 +476,8 @@ def _collect_matches(
     *,
     filter_kwargs: dict[str, object],
     scan_limit: int | None,
+    received_after_filter: str | None = None,
+    received_before_filter: str | None = None,
 ) -> dict[str, object]:
     """Non-mutating newest-first scan collecting messages that pass the filters.
 
@@ -447,9 +493,16 @@ def _collect_matches(
     skips that ``$skip`` paging suffers. Boundary ties on ``receivedDateTime``
     are absorbed by using ``le`` and de-duplicating on message id.
 
+    Date bounds travel to Graph rather than being applied after the fetch. That
+    is what makes a date-scoped query O(window) instead of O(folder): asking for
+    one month of a 50k-message mailbox used to page all 50k rows. The upper bound
+    needs no extra machinery -- paging already anchors on ``receivedDateTime le``,
+    so *received_before_filter* is simply the initial cursor and the scan starts
+    inside the window instead of at the newest message.
+
     Returns a dict with ``matches`` (summaries), ``scanned`` (distinct
     messages inspected), ``passes`` (pages fetched), ``exhausted`` (reached the
-    end of the folder), and ``stop_reason``.
+    end of the folder or window), and ``stop_reason``.
     """
     select = ",".join(_SUMMARY_SELECT)
 
@@ -457,9 +510,11 @@ def _collect_matches(
     seen_ids: set[str] = set()
     scanned = 0
     passes = 0
-    cursor: str | None = None
+    # The upper bound *is* the starting cursor: one `le` clause serves both.
+    cursor: str | None = received_before_filter
     exhausted = False
-    stop_reason = "folder_exhausted"
+    windowed = bool(received_after_filter or received_before_filter)
+    stop_reason = "window_exhausted" if windowed else "folder_exhausted"
 
     while True:
         if scan_limit is not None and scanned >= scan_limit:
@@ -476,8 +531,15 @@ def _collect_matches(
             "$orderby": "receivedDateTime desc",
             "$select": select,
         }
+        clauses: list[str] = []
         if cursor is not None:
-            params["$filter"] = f"receivedDateTime le {cursor}"
+            clauses.append(f"receivedDateTime le {cursor}")
+        if received_after_filter is not None:
+            # Re-applied every page: the cursor rewrites the `le` half each time,
+            # and dropping the `ge` half would let page two scan past the window.
+            clauses.append(f"receivedDateTime ge {received_after_filter}")
+        if clauses:
+            params["$filter"] = " and ".join(clauses)
 
         payload = client.request(
             "GET", f"/me/mailFolders/{folder_id}/messages", params=params
@@ -509,7 +571,7 @@ def _collect_matches(
 
         if len(items) < top and not has_more:
             exhausted = True
-            stop_reason = "folder_exhausted"
+            stop_reason = "window_exhausted" if windowed else "folder_exhausted"
             break
         if new_in_page == 0 or oldest == cursor:
             # A full page of messages sharing the cursor timestamp: cannot
@@ -533,7 +595,9 @@ def bulk_manage_messages_multi_pass(
     folder: str = "inbox",
     sender_contains: str | None = None,
     subject_contains: str | None = None,
+    recipient_contains: str | None = None,
     received_after: str | None = None,
+    received_before: str | None = None,
     unread_only: bool = False,
     action: str = "delete",
     destination: str | None = None,
@@ -565,8 +629,15 @@ def bulk_manage_messages_multi_pass(
     * ``total_in_folder`` -- folder size, as a scale anchor.
     * ``truncated`` -- ``False`` only when the scan reached the end of the
       folder; ``True`` if *scan_limit* cut it short, so more may exist deeper.
-    * ``stop_reason`` -- ``folder_exhausted`` | ``scan_limit_reached`` |
-      ``cursor_stalled``.
+    * ``stop_reason`` -- ``folder_exhausted`` | ``window_exhausted`` |
+      ``scan_limit_reached`` | ``cursor_stalled``. ``window_exhausted`` means a
+      date bound was given and the scan covered all of it -- complete coverage of
+      what was asked, but not of the folder, so the two are reported separately.
+
+    *received_after* / *received_before* are applied by Graph, not after the
+    fetch, so a date-scoped query costs O(window) rather than O(folder). This is
+    what makes reaching old mail cheap: without it, one month of a 50k-message
+    mailbox means paging all 50k rows.
 
     In a live (non-dry-run) run, messages that a rule or another client moved
     or deleted between collection and action are reported as ``already_gone``
@@ -587,6 +658,22 @@ def bulk_manage_messages_multi_pass(
     if action == "move" and not destination:
         raise ValueError("destination is required when action='move'")
 
+    # Validate up front so a malformed or inverted window fails before the first
+    # Graph call. An inverted window would otherwise return zero matches, which
+    # reads as "nothing there" rather than "you asked for an empty range".
+    after_filter = _validate_iso(received_after, "received_after") if received_after else None
+    before_filter = (
+        _validate_iso(received_before, "received_before") if received_before else None
+    )
+    if after_filter and before_filter:
+        if _parse_utc(after_filter, "received_after") > _parse_utc(
+            before_filter, "received_before"
+        ):
+            raise ValueError(
+                f"received_after ({received_after}) is later than received_before "
+                f"({received_before}), so the window is empty."
+            )
+
     client = GraphClient(account_id)
     folder_id = FOLDERS.get(folder.lower(), folder)
     validate_path_segment(folder_id, "folder")
@@ -594,6 +681,7 @@ def bulk_manage_messages_multi_pass(
     filter_kwargs: dict[str, object] = {
         "sender_contains": sender_contains,
         "subject_contains": subject_contains,
+        "recipient_contains": recipient_contains,
         # Parsed once up front so a malformed cutoff fails before any Graph
         # call, and so a whole-folder scan does not re-parse it per message.
         "received_after": (
@@ -607,6 +695,8 @@ def bulk_manage_messages_multi_pass(
         folder_id,
         filter_kwargs=filter_kwargs,
         scan_limit=scan_limit,
+        received_after_filter=after_filter,
+        received_before_filter=before_filter,
     )
     matches: list[MailMessageSummary] = collected["matches"]
     truncated = not collected["exhausted"]

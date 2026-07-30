@@ -118,7 +118,14 @@ class MailFolderSummary(BaseModel):
 
 
 class MailMessageSummary(BaseModel):
-    """List-level view of a mail message (no full body)."""
+    """List-level view of a mail message (no full body).
+
+    Recipients are carried here, not just on ``MailMessageDetail``: in Sent
+    Items the sender is the mailbox owner on every row, so recipients are the
+    only field that tells the messages apart, and in the Inbox they identify
+    which alias a message was delivered to and whether the owner was addressed
+    directly or merely copied.
+    """
     id: str
     subject: str | None = None
     sender_name: str | None = None
@@ -126,6 +133,10 @@ class MailMessageSummary(BaseModel):
     received_datetime: str | None = None
     received_label: str | None = None
     sender_label: str | None = None
+    to_recipients: list[dict[str, Any]] = Field(default_factory=list)
+    to_recipient_labels: list[str] = Field(default_factory=list)
+    cc_recipients: list[dict[str, Any]] = Field(default_factory=list)
+    cc_recipient_labels: list[str] = Field(default_factory=list)
     is_read: bool = False
     has_attachments: bool = False
     conversation_id: str | None = None
