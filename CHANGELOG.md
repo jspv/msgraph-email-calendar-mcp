@@ -95,10 +95,13 @@ their issues describe; both are in code paths a model exercises by default.
   `isAllDay is True` and could not have caught it; it now asserts the emitted
   `start`/`end`.
 
-  The Graph-rejects-non-midnight claim comes from the documented contract, not
-  from a live call. `scripts/smoke_test.py check-all-day-event` prints both
-  payloads and, with `--apply`, POSTs the pre-fix one to settle whether Graph
-  400s, rounds, or accepts.
+  **Confirmed against the live API**, not just the documented contract: posting
+  the pre-fix payload returns a hard 400 — *"The Event.Start property for an
+  all-day event needs to be set to midnight."* So between `fcc17cc` and this
+  release, every all-day event created with an offset-bearing time failed
+  outright rather than being merely misplaced. `scripts/smoke_test.py
+  check-all-day-event` re-settles this if the all-day path is ever touched
+  again; without `--apply` it only prints the payloads.
 
 ## 0.2.0
 
