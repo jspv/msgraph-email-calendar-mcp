@@ -159,6 +159,7 @@ def list_messages(
     since: str | None = None,
     until: str | None = None,
     flag_status: str | None = None,
+    category: str | None = None,
     fields: list[str] | None = None,
 ) -> list[dict]:
     """List recent mail messages from a folder, newest first.
@@ -171,9 +172,9 @@ def list_messages(
     `to_recipient_labels` / `cc_recipient_labels` so Sent Items rows are
     distinguishable and Inbox rows show which alias was addressed.
 
-    Pass `flag_status` (`flagged` | `complete` | `notFlagged`) to filter on
-    follow-up state server-side — this is how you answer "show me my flagged
-    mail" in one request. Every summary also reports `flag_status` and
+    Pass `flag_status` (`flagged` | `complete` | `notFlagged`) or `category` to
+    filter server-side — this is how you answer "show me my flagged mail" or
+    "everything I filed under Rent" in one request rather than a folder scan. Every summary also reports `flag_status` and
     `categories`, which were previously writable but not readable.
     """
     bounded_limit = max(1, min(limit, settings.max_list_limit))
@@ -181,7 +182,7 @@ def list_messages(
         item.model_dump()
         for item in mail.list_messages(
             account_id, folder, bounded_limit, since=since, until=until,
-            flag_status=flag_status, fields=fields
+            flag_status=flag_status, category=category, fields=fields
         )
     ]
 
@@ -290,8 +291,11 @@ def bulk_manage_messages(
     ``recipient_contains`` matches across both To and Cc. It is what makes
     "everything sent to my <vendor> alias" a single call.
 
-    ``flag_status`` (``flagged`` | ``complete`` | ``notFlagged``) and
-    ``category`` filter on follow-up state, which list results now report.
+    ``category`` is applied by Graph, like the date bounds, so filtering a large
+    folder by category does not page the whole thing. ``flag_status``
+    (``flagged`` | ``complete`` | ``notFlagged``) is matched client-side instead:
+    Exchange rejects a flag restriction combined with the ``receivedDateTime``
+    sort this scan's cursor depends on.
     """
     if limit is not None and limit < 1:
         raise ValueError("limit must be a positive integer, or None to scan the whole folder")

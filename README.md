@@ -41,7 +41,7 @@ A [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) server that g
 | Auth | `start_auth` | Begin device-code flow (returns URL + code) |
 | Auth | `finish_auth` | Complete device-code flow after user approval |
 | Mail | `list_folders` | List mail folders with item/unread counts |
-| Mail | `list_messages` | List messages in a folder (limit 1000; `since`/`until` window, `flag_status` filter, `fields` override; results carry `conversation_id`, recipients, `flag_status`, `categories`) |
+| Mail | `list_messages` | List messages in a folder (limit 1000; `since`/`until` window, `flag_status` and `category` filters, `fields` override; results carry `conversation_id`, recipients, `flag_status`, `categories`) |
 | Mail | `get_message` | Full message details including body |
 | Mail | `search_messages` | Search via OData `$search` (limit 1000; `conversation_id` in results) |
 | Mail | `get_attachments` | List attachment metadata, or download one by `attachment_id` |
@@ -364,8 +364,17 @@ against the live API rather than inferred:
   count, or narrow with `since`/`until` — a date clause **does** combine with the
   flag filter.
 
-`bulk_manage_messages` filters flags client-side instead, since its cursor
-pagination depends on the `receivedDateTime` sort it would otherwise have to drop.
+**Categories behave differently, and better.** Exchange accepts a category
+restriction *with* a sort, so `category` is pushed server-side on both
+`list_messages` and `bulk_manage_messages`, keeps newest-first ordering, and
+imposes none of the `limit` caveat above. Filtering a 50k-message folder by
+category reads only the matching rows — a live check scanned 1 message rather
+than the folder.
+
+`bulk_manage_messages` filters *flags* client-side, since its cursor pagination
+depends on the `receivedDateTime` sort a flag restriction would force it to drop.
+Category names are escaped as OData string literals, so a name containing a
+quote (`Bob's stuff`) is handled rather than breaking the filter.
 
 #### Date windows
 

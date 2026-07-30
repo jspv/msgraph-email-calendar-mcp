@@ -136,6 +136,18 @@ def _sanitize_select(fields: list[str]) -> list[str]:
     return clean
 
 
+def _odata_string(value: str) -> str:
+    """Quote *value* as an OData string literal, escaping embedded quotes.
+
+    Unlike dates and flag states -- which are validated against a parser and an
+    enum respectively -- a category name is free text that lands directly in a
+    ``$filter``. OData escapes a single quote by doubling it; without that, a
+    name like ``Bob's stuff`` closes the literal early and the remainder is
+    parsed as operators.
+    """
+    return "'" + value.replace("'", "''") + "'"
+
+
 def _validate_iso(value: str, label: str = "since") -> str:
     """Validate that *value* is an ISO-8601 datetime and return it unchanged.
 
@@ -220,6 +232,7 @@ def list_messages(
     since: str | None = None,
     until: str | None = None,
     flag_status: str | None = None,
+    category: str | None = None,
     fields: list[str] | None = None,
 ) -> list[MailMessageSummary]:
     """List recent messages from *folder*, newest first.
@@ -251,6 +264,10 @@ def list_messages(
         date_clauses.append(f"receivedDateTime ge {_validate_iso(since, 'since')}")
     if until is not None:
         date_clauses.append(f"receivedDateTime le {_validate_iso(until, 'until')}")
+    if category:
+        # Confirmed live: Exchange accepts a category restriction *with* an
+        # `$orderby`, unlike the flag restriction below, so the sort stays.
+        date_clauses.append(f"categories/any(c:c eq {_odata_string(category)})")
     if flag_status is not None:
         if flag_status not in _VALID_FLAG_STATUSES:
             raise ValueError(f"flag_status must be one of {sorted(_VALID_FLAG_STATUSES)}")
@@ -529,6 +546,7 @@ def _collect_matches(
     scan_limit: int | None,
     received_after_filter: str | None = None,
     received_before_filter: str | None = None,
+    category_filter: str | None = None,
 ) -> dict[str, object]:
     """Non-mutating newest-first scan collecting messages that pass the filters.
 
@@ -589,6 +607,11 @@ def _collect_matches(
             # Re-applied every page: the cursor rewrites the `le` half each time,
             # and dropping the `ge` half would let page two scan past the window.
             clauses.append(f"receivedDateTime ge {received_after_filter}")
+        if category_filter is not None:
+            # Also re-applied per page, and safe to combine with the
+            # `receivedDateTime desc` sort the cursor depends on -- which is why
+            # categories can be pushed server-side here while flags cannot.
+            clauses.append(f"categories/any(c:c eq {_odata_string(category_filter)})")
         if clauses:
             params["$filter"] = " and ".join(clauses)
 
@@ -754,6 +777,7 @@ def bulk_manage_messages_multi_pass(
         scan_limit=scan_limit,
         received_after_filter=after_filter,
         received_before_filter=before_filter,
+        category_filter=category,
     )
     matches: list[MailMessageSummary] = collected["matches"]
     truncated = not collected["exhausted"]

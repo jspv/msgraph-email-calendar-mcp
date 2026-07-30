@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.6.0
+
+### Added
+
+- **Server-side `category` filtering** on `list_messages` and
+  `bulk_manage_messages`. Previously `category` matched client-side, so
+  "everything I filed under Rent" still paged the whole folder. Now Graph
+  returns only the matching rows — a live check scanned 1 message instead of the
+  folder.
+
+  Probed against the live API before implementing, with a real message tagged
+  and a negative control, because a mocked test proves only that a `$filter`
+  string was built — the gap that let a broken flag filter ship in 0.5.0.
+  Findings: `categories/any(c:c eq 'X')` matches correctly, a non-matching
+  category returns nothing, and unlike `flag/flagStatus` it is accepted
+  **alongside `$orderby`**. That is why categories can go into the bulk scan,
+  whose cursor pagination depends on the `receivedDateTime` sort, while flags
+  cannot.
+
+### Security
+
+- Category names are the only caller-supplied value that reaches a `$filter`
+  without a parser or enum in front of it — dates go through `_validate_iso`,
+  flag states through an enum. They now go through `_odata_string`, which quotes
+  the value and doubles embedded single quotes per OData. Without it a name like
+  `Bob's stuff` closes the literal early and the remainder is parsed as
+  operators.
+
 ## 0.5.0
 
 Follow-up flags and categories are readable, closing a write-only asymmetry.
