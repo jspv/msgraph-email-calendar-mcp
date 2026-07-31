@@ -97,7 +97,7 @@ developer's real cached token against their real mailbox.
 |------|---------------|-------|
 | `list_folders` | `parent_folder_id` | Returns folder IDs; pass a parent to list subfolders |
 | `list_messages` | `folder`, `limit` (≤1000), `since`, `until`, `flag_status`, `category`, `fields` | Newest first; `since`/`until` filter server-side (use both to read one date slice), `flag_status` filters follow-up state server-side, `fields` overrides `$select`. Results carry `conversation_id`, `to_recipient_labels`, `cc_recipient_labels`, `flag_status`, `categories` |
-| `get_message` | `message_id` | Full body + recipients |
+| `get_message` | `message_id` | Full body + recipients. Returns `internet_message_id` — the only key stable across folder moves |
 | `search_messages` | `query`, `limit` (≤1000) | Graph `$search` OData |
 | `get_attachments` | `message_id`, `attachment_id` | Without `attachment_id`: list metadata. With: download (base64 under 1.5 MB) |
 
@@ -127,7 +127,7 @@ developer's real cached token against their real mailbox.
 | Tool | Key parameters | Notes |
 |------|---------------|-------|
 | `list_calendars` | `user_id` | Pass `user_id` for another user's calendars |
-| `list_events` | `calendar_id`, `start_iso`, `end_iso`, `limit` (≤100), `user_id` | Default window: −1 day to +14 days |
+| `list_events` | `calendar_id`, `start_iso`, `end_iso`, `limit` (≤100), `user_id`, `timezone` | Default window: −1 day to +14 days. Offsetless times need `timezone`/`MSGRAPH_DEFAULT_TIMEZONE`, same rule as the write tools |
 | `get_event` | `event_id`, `user_id` | Body, attendees, organizer |
 | `check_availability` | `emails`, `start_iso`, `end_iso`, `mode`, `timezone` | `free_busy` or `suggest`. Same timezone rule as the write tools |
 
@@ -158,6 +158,8 @@ These are load-bearing constraints — do not weaken them:
 - **OData parameter validation** (`mail.py`): `$select` fields via `_sanitize_select`, `$filter` datetimes via `_validate_iso`, `$search` quotes stripped. Any new OData parameter built from caller input needs equivalent validation.
 - **Datetime normalization** (`models.py:_parse_utc`): Caller datetimes are parsed to tz-aware UTC. This reads a naive value as UTC, which is right for a mail `received_after` cutoff and **wrong** for a calendar write — do not reuse it there.
 - **Calendar datetimes** (`calendar.py:_graph_datetime`): every calendar time must go through this. Graph's `dateTime` carries no offset of its own, so the naive-string/zone-name pairing has to be built deliberately. Offset-bearing input is *converted* to UTC (relabelling books it at the wrong hour); offsetless input is paired with `timezone` / `MSGRAPH_DEFAULT_TIMEZONE` and handed over unconverted, which is what keeps recurring events right across DST; offsetless input with no zone available is **refused**, never assumed to be UTC. Do not add a UTC fallback — that silent assumption was issue #9.
+- **Reads follow the same timezone rule as writes** (`calendar.py:_graph_instant`): `list_events` refuses an offsetless window instead of shifting it. Note the difference from `_graph_datetime` — a `$filter` compares instants, so a read time is *resolved through* its zone to UTC rather than paired with it. Fixing writes and leaving reads is how #9's "selective rather than uniform" complaint got reproduced; do not re-introduce it.
+- **`id` is not stable; `internet_message_id` is** (`mail.py`): Graph remints a message `id` on every folder move, and a round trip does not restore the original. Any state persisted per message must key on `internet_message_id` (RFC 5322 Message-ID). This server moves mail as a core feature, so this is not an edge case.
 - **All-day events** (`calendar.py:_graph_datetime`, `all_day=True`): Graph requires midnight in the stated zone, so the calendar *date* must survive and the instant must not. Converting an all-day instant to UTC emits `04:00` and is issue #10. Tests must assert the emitted `dateTime`, not just `isAllDay`.
 - **Token cache permissions** (`auth.py`): Cache file `0600`, parent directory `0700`. Preserve these.
 - **Soft-delete default**: `delete_message(permanent=False)`. The `permanent=True` path is irreversible — keep the default.

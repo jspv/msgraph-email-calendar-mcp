@@ -332,12 +332,22 @@ def list_events(
     calendar_id: str | None = None,
     limit: int = 25,
     user_id: str | None = None,
+    timezone: str | None = None,
 ) -> list[dict]:
-    """List events from a calendar in a time range. Pass user_id for shared calendars."""
+    """List events from a calendar in a time range. Pass user_id for shared calendars.
+
+    Times without a UTC offset need a zone: pass ``timezone`` (IANA, e.g.
+    ``"America/New_York"``) or set ``MSGRAPH_DEFAULT_TIMEZONE`` on the server.
+    Otherwise the call is refused rather than guessing UTC, which would shift the
+    whole query window by your offset. This matches the calendar write tools.
+    """
     bounded_limit = max(1, min(limit, settings.max_event_limit))
     return [
         item.model_dump()
-        for item in calendar.list_events(account_id, start_iso, end_iso, calendar_id, bounded_limit, user_id=user_id)
+        for item in calendar.list_events(
+            account_id, start_iso, end_iso, calendar_id, bounded_limit,
+            user_id=user_id, timezone=timezone,
+        )
     ]
 
 

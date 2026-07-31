@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.7.0
+
+### Fixed
+
+- **`list_events` never got the timezone rule #9 established for writes.** The
+  same bare wall-clock string was refused by `create_event` and silently
+  accepted by `list_events`, shifting the query window by the caller's offset.
+  That is precisely the "selective rather than uniform" failure #9 criticised in
+  `fcc17cc`, reproduced by fixing the writes and leaving the reads. `list_events`
+  now takes `timezone` and applies the same refusal.
+
+  One deliberate difference: a `$filter` compares instants, so an offsetless read
+  time is *resolved through* its zone to UTC, whereas a write hands Graph the
+  wall-clock string plus the zone name — which is what preserves intent across
+  DST for recurring events.
+
+- **Datetime labels had trailing and doubled spaces, and never named the zone.**
+  `%Z` is empty for a naive datetime, so an event range rendered as
+  `'2026-08-04 14:00  → 2026-08-04 15:00 '`. Labels now take the zone from the
+  `dateTimeTimeZone` payload beside the value. Since 0.3.0 these times are no
+  longer reliably UTC, so an unlabelled one was ambiguous rather than untidy.
+
+### Added
+
+- **`internet_message_id` on every list and detail result** (#12). Graph remints
+  a message `id` on every folder move, and — per the live test in that issue — a
+  round trip does not restore the original, so there is no cached id to fall back
+  on. Since moving mail is a core feature here, any caller persisting per-message
+  state previously had no key that survived its own operations. The RFC 5322
+  Message-ID does, and it is meaningful outside this mailbox.
+
+  Not included, per the issue's own scoping: accepting it as an input identifier,
+  which would need a `$filter` lookup per call.
+
 ## 0.6.0
 
 ### Added
