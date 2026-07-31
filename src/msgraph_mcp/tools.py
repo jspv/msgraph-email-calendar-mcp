@@ -240,6 +240,33 @@ def search_messages(query: str, account_id: str | None = None, limit: int = 10) 
     return [item.model_dump() for item in mail.search_messages(account_id, safe_query, bounded_limit)]
 
 
+@_requires_scope(*_MAIL_READ)
+def sync_messages(
+    folder: str = "inbox",
+    delta_token: str | None = None,
+    limit: int | None = None,
+    account_id: str | None = None,
+) -> dict:
+    """Return what CHANGED in a folder since the last sync, plus a new token.
+
+    Use this instead of a date window when you need to notice *edits* and
+    *deletions*, not just arrivals. `received_after` cannot help there:
+    `receivedDateTime` never moves after delivery, so a message flagged or moved
+    yesterday still carries its original date, and a deleted message simply stops
+    appearing — indistinguishable from one outside the window.
+
+    Call once with no `delta_token` for a baseline, then pass the token back each
+    time. Entries with `removed: true` are ids that left the folder. Tokens
+    expire; that surfaces as an instruction to re-sync from scratch.
+
+    Delta is per-folder, so a move reads as a removal in one and an addition in
+    another — with a *different* `id`. Join them on `internet_message_id`.
+    """
+    return mail.sync_messages(
+        account_id=account_id, folder=folder, delta_token=delta_token, limit=limit
+    )
+
+
 @_requires_scope(*_MAIL_WRITE)
 def bulk_manage_messages(
     account_id: str | None = None,
@@ -536,6 +563,11 @@ def create_event(
     account_id: str | None = None,
     user_id: str | None = None,
     timezone: str | None = None,
+    repeat: str | None = None,
+    repeat_interval: int = 1,
+    repeat_days: list[str] | None = None,
+    repeat_count: int | None = None,
+    repeat_until: str | None = None,
     dry_run: bool = True,
 ) -> dict:
     """Create a calendar event. Dry-run by default. Pass user_id for shared calendars.
@@ -549,12 +581,20 @@ def create_event(
     ``"America/New_York"``) or set ``MSGRAPH_DEFAULT_TIMEZONE`` on the server.
     Otherwise the call is refused rather than guessing UTC, which would book the
     event at the wrong hour. A time that already carries an offset is used as-is.
+
+    Set ``repeat`` (``daily`` | ``weekly`` | ``monthly`` | ``yearly``) to create
+    a recurring series. A weekly repeat needs ``repeat_days`` (e.g.
+    ``["monday","wednesday"]``); monthly and yearly take their day from
+    ``start_iso``. Bound it with ``repeat_count`` or ``repeat_until`` — with
+    neither, the series never ends. The dry-run states the repeat in words.
     """
     return calendar.create_event(
         account_id, subject=subject, start_iso=start_iso, end_iso=end_iso,
         attendees=attendees, body=body, location=location,
         is_all_day=is_all_day, calendar_id=calendar_id, user_id=user_id,
-        timezone=timezone, dry_run=dry_run,
+        timezone=timezone, repeat=repeat, repeat_interval=repeat_interval,
+        repeat_days=repeat_days, repeat_count=repeat_count,
+        repeat_until=repeat_until, dry_run=dry_run,
     )
 
 

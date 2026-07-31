@@ -43,6 +43,7 @@ A [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) server that g
 | Mail | `list_folders` | List mail folders with item/unread counts |
 | Mail | `list_messages` | List messages in a folder (limit 1000; `since`/`until` window, `flag_status` and `category` filters, `fields` override; results carry `conversation_id`, recipients, `flag_status`, `categories`) |
 | Mail | `get_message` | Full message details including body |
+| Mail | `sync_messages` | Delta sync: what *changed* in a folder since a token, including deletions |
 | Mail | `search_messages` | Search via OData `$search` (limit 1000; `conversation_id` in results) |
 | Mail | `get_attachments` | List attachment metadata, or download one by `attachment_id` |
 | Mail | `send_message` | Send a new email (dry-run by default) |
@@ -60,7 +61,7 @@ A [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) server that g
 | Calendar | `list_calendars` | List calendars (own or shared via `user_id`) |
 | Calendar | `list_events` | List events in a time range (limit 100; needs a `timezone` for offsetless times) |
 | Calendar | `get_event` | Full event details with attendees |
-| Calendar | `create_event` | Create a calendar event (dry-run by default; needs a `timezone` for offsetless times) |
+| Calendar | `create_event` | Create an event or recurring series (dry-run by default; `repeat`/`repeat_days`/`repeat_count`; needs a `timezone` for offsetless times) |
 | Calendar | `update_event` | Update an existing event (dry-run by default; needs a `timezone` for offsetless times) |
 | Calendar | `delete_event` | Delete or cancel an event (dry-run by default) |
 | Calendar | `respond_to_event` | Accept, decline, or tentatively accept |
@@ -131,6 +132,7 @@ cp .env.example .env
 | `MICROSOFT_TOKEN_CACHE_PATH` | `.data/msal_token_cache.json` | Path to the local MSAL token cache |
 | `MAX_ATTACHMENT_INLINE_SIZE` | `1572864` | Max attachment size (bytes) for inline base64 (default 1.5 MB) |
 | `MAX_LIST_LIMIT` | `1000` | Max items returned by `list_messages` / `search_messages` |
+| `GRAPH_IMMUTABLE_IDS` | *(unset)* | `1` to request Graph's immutable message ids, which survive folder moves. All-or-nothing; flipping it invalidates stored ids |
 | `MSGRAPH_DEFAULT_TIMEZONE` | *(unset)* | IANA or Windows zone applied to calendar times written without a UTC offset. Unset → such times are refused, not guessed |
 
 **Recommended tenant values:**

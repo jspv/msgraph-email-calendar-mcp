@@ -155,6 +155,112 @@ def _graph_instant(value: str, label: str, timezone_name: str | None = None) -> 
     )
 
 
+_WEEKDAYS = {
+    "monday": "monday", "mon": "monday",
+    "tuesday": "tuesday", "tue": "tuesday", "tues": "tuesday",
+    "wednesday": "wednesday", "wed": "wednesday",
+    "thursday": "thursday", "thu": "thursday", "thur": "thursday", "thurs": "thursday",
+    "friday": "friday", "fri": "friday",
+    "saturday": "saturday", "sat": "saturday",
+    "sunday": "sunday", "sun": "sunday",
+}
+
+_REPEAT_TYPES = {
+    "daily": "daily",
+    "weekly": "weekly",
+    "monthly": "absoluteMonthly",
+    "yearly": "absoluteYearly",
+}
+
+
+def _recurrence(
+    repeat: str | None,
+    interval: int,
+    days: list[str] | None,
+    count: int | None,
+    until: str | None,
+    start_iso: str,
+) -> dict | None:
+    """Build Graph's ``recurrence`` object from a compact caller vocabulary.
+
+    Graph's own shape is a pattern/range pair with six pattern types and three
+    range types, most of which a caller saying "every Tuesday" does not want to
+    think about. This exposes ``daily``/``weekly``/``monthly``/``yearly`` and
+    derives the rest -- monthly and yearly take their day from *start_iso*,
+    which is what the caller already told us.
+
+    Returns ``None`` when no repeat was asked for, so the key is omitted rather
+    than sent empty.
+    """
+    if repeat is None:
+        return None
+    if repeat not in _REPEAT_TYPES:
+        raise ValueError(
+            f"repeat must be one of {sorted(_REPEAT_TYPES)}, got {repeat!r}"
+        )
+    if count is not None and until is not None:
+        raise ValueError("repeat_count and repeat_until are mutually exclusive")
+    if interval < 1:
+        raise ValueError("repeat_interval must be a positive integer")
+
+    pattern: dict = {"type": _REPEAT_TYPES[repeat], "interval": interval}
+
+    if repeat == "weekly":
+        if not days:
+            raise ValueError("repeat_days is required for a weekly repeat")
+        normalised = []
+        for day in days:
+            key = day.strip().lower()
+            if key not in _WEEKDAYS:
+                raise ValueError(f"unknown day {day!r} in repeat_days")
+            if _WEEKDAYS[key] not in normalised:
+                normalised.append(_WEEKDAYS[key])
+        pattern["daysOfWeek"] = normalised
+
+    start_date = _parse_naive_or_aware(start_iso, "start_iso").date()
+    if repeat == "monthly":
+        pattern["dayOfMonth"] = start_date.day
+    elif repeat == "yearly":
+        pattern["dayOfMonth"] = start_date.day
+        pattern["month"] = start_date.month
+
+    if count is not None:
+        if count < 1:
+            raise ValueError("repeat_count must be a positive integer")
+        rng = {
+            "type": "numbered",
+            "startDate": start_date.isoformat(),
+            "numberOfOccurrences": count,
+        }
+    elif until is not None:
+        rng = {
+            "type": "endDate",
+            "startDate": start_date.isoformat(),
+            "endDate": _parse_naive_or_aware(until, "repeat_until").date().isoformat(),
+        }
+    else:
+        rng = {"type": "noEnd", "startDate": start_date.isoformat()}
+
+    return {"pattern": pattern, "range": rng}
+
+
+def _repeat_phrase(repeat: str, interval: int, days, count, until) -> str:
+    """Describe a repeat in words, for a dry-run a human has to approve."""
+    every = repeat if interval == 1 else f"every {interval} {repeat.rstrip('ly')}s"
+    base = {"daily": "daily", "weekly": "weekly",
+            "monthly": "monthly", "yearly": "yearly"}[repeat] if interval == 1 else every
+    text = f"repeats {base}"
+    if days:
+        text += " on " + ", ".join(days)
+    if count:
+        text += f", {count} times"
+    elif until:
+        text += f", until {until}"
+    else:
+        text += ", with no end date"
+    return text
+
+
 def _attendees_phrase(count: int) -> str:
     """``"1 attendee"`` / ``"3 attendees"`` -- these strings are read by humans."""
     return f"{count} attendee" if count == 1 else f"{count} attendees"
@@ -256,7 +362,7 @@ def list_events(
             "endDateTime": end_iso,
             "$top": min(limit, 100),
             "$orderby": "start/dateTime",
-            "$select": "id,subject,start,end,location,isAllDay,webLink",
+            "$select": "id,subject,start,end,location,isAllDay,webLink,type,seriesMasterId",
         },
         limit=limit,
     )
@@ -266,15 +372,21 @@ def list_events(
         location_label = (item.get("location") or {}).get("displayName")
         time_label = _event_time_label(item.get("start"), item.get("end"), is_all_day)
         subject = item.get("subject") or "(no subject)"
+        event_type = item.get("type")
+        # calendarView expands a series into occurrences, so without this a
+        # repeat is indistinguishable from a one-off in a list result.
+        repeat_note = "repeat" if event_type in {"occurrence", "exception"} else None
         summary = " — ".join(
             part
-            for part in [subject, time_label, location_label]
+            for part in [subject, time_label, location_label, repeat_note]
             if part
         )
         output.append(
             CalendarEventSummary(
                 id=item["id"],
                 subject=item.get("subject"),
+                type=event_type,
+                series_master_id=item.get("seriesMasterId"),
                 start=item.get("start"),
                 end=item.get("end"),
                 location=location_label,
@@ -302,9 +414,19 @@ def create_event(
     calendar_id: str | None = None,
     user_id: str | None = None,
     timezone: str | None = None,
+    repeat: str | None = None,
+    repeat_interval: int = 1,
+    repeat_days: list[str] | None = None,
+    repeat_count: int | None = None,
+    repeat_until: str | None = None,
     dry_run: bool = True,
 ) -> dict:
     """Create a new calendar event.  Pass *user_id* for shared calendars.
+
+    *repeat* (``daily``/``weekly``/``monthly``/``yearly``) creates a recurring
+    series. A weekly repeat needs *repeat_days*; monthly and yearly take their
+    day from *start_iso*. Bound the series with *repeat_count* or
+    *repeat_until* -- with neither, it never ends.
 
     Dry-run by default: Graph mails invitations the moment an event with
     attendees is created, so there is no undo. Unlike the mail preview -- which
@@ -323,6 +445,11 @@ def create_event(
         ),
         "isAllDay": is_all_day,
     }
+    recurrence = _recurrence(
+        repeat, repeat_interval, repeat_days, repeat_count, repeat_until, start_iso
+    )
+    if recurrence:
+        event_body["recurrence"] = recurrence
     if attendees:
         event_body["attendees"] = [
             {"emailAddress": {"address": email}, "type": "required"}
@@ -348,8 +475,17 @@ def create_event(
             "message": (
                 "Dry-run: event NOT created. Set dry_run=False to create it"
                 + (
-                    f" and invite {_attendees_phrase(len(attendees))}."
+                    f" and invite {_attendees_phrase(len(attendees))}"
                     if attendees
+                    else ""
+                )
+                + (
+                    "; "
+                    + _repeat_phrase(
+                        repeat, repeat_interval, repeat_days, repeat_count, repeat_until
+                    )
+                    + "."
+                    if repeat
                     else "."
                 )
             ),
@@ -510,8 +646,20 @@ def delete_event(
                 "attendee_count": attendee_count,
                 "organizer": current.organizer_label,
                 "is_cancelled": current.is_cancelled,
+                "type": current.type,
+                "series_master_id": current.series_master_id,
             },
-            "message": f"Dry-run: event NOT removed. Set dry_run=False to {consequence}",
+            "message": (
+                f"Dry-run: event NOT removed. Set dry_run=False to {consequence}"
+                # Deleting a master takes the whole series with it, which the
+                # subject and time alone give no hint of.
+                + (
+                    " This is a recurring series: removing it deletes every"
+                    " occurrence, not just this one."
+                    if current.type == "seriesMaster"
+                    else ""
+                )
+            ),
         }
 
     if cancel_message:
@@ -556,7 +704,7 @@ def get_event(account_id: str | None, event_id: str, user_id: str | None = None)
         "GET",
         f"{base}/events/{event_id}",
         params={
-            "$select": "id,subject,start,end,isAllDay,location,body,attendees,organizer,webLink,isCancelled,isOnlineMeeting",
+            "$select": "id,subject,start,end,isAllDay,location,body,attendees,organizer,webLink,isCancelled,isOnlineMeeting,type,seriesMasterId,recurrence",
         },
     ) or {}
     is_all_day = bool(item.get("isAllDay", False))
@@ -579,6 +727,9 @@ def get_event(account_id: str | None, event_id: str, user_id: str | None = None)
     return CalendarEventDetail(
         id=item["id"],
         subject=item.get("subject"),
+        type=item.get("type"),
+        series_master_id=item.get("seriesMasterId"),
+        recurrence=item.get("recurrence"),
         start=item.get("start"),
         end=item.get("end"),
         is_all_day=is_all_day,

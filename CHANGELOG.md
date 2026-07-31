@@ -1,5 +1,76 @@
 # Changelog
 
+## 0.8.0
+
+Three capability gaps: recurring events, immutable ids (#14), and delta sync (#13).
+All three probed against the live API before implementing.
+
+### Added
+
+- **Recurring events.** `create_event` gains `repeat`
+  (`daily`/`weekly`/`monthly`/`yearly`), `repeat_interval`, `repeat_days`,
+  `repeat_count` and `repeat_until`. This is a compact vocabulary over Graph's
+  six pattern types and three range types: a weekly repeat needs `repeat_days`,
+  monthly and yearly derive their day from `start_iso`, and with neither
+  `repeat_count` nor `repeat_until` the series never ends. The dry-run states
+  the repeat in words — *"repeats weekly on monday, wednesday, 4 times"* — since
+  a raw pattern dict is not something a human can review.
+
+  Reads now expose `type` (`singleInstance` / `occurrence` / `exception` /
+  `seriesMaster`) and `series_master_id` on both calendar models, plus
+  `recurrence` on the detail. Without those, a repeat was indistinguishable from
+  a one-off and there was no way to find the master in order to edit the series.
+
+  `delete_event`'s preview now warns when the target is a `seriesMaster`:
+  removing it deletes **every** occurrence, which the subject and time alone
+  give no hint of.
+
+  Worth recording: `list_events` already used `calendarView`, which *expands* a
+  series into occurrences. Plain `/events` returns only the master — so the
+  existing endpoint choice was correct and must not be changed.
+
+- **`sync_messages` — delta query** (#13). Returns what *changed* in a folder
+  since a token, including deletions as explicit `removed: true` entries rather
+  than as absences to be inferred. A date window cannot do this:
+  `receivedDateTime` never moves after delivery, so a message flagged or moved
+  yesterday still carries its original date.
+
+  `GraphClient.paginate_delta` follows `@odata.nextLink` and returns the
+  terminating `@odata.deltaLink`, which `paginate` discards. A `limit` that cuts
+  the walk short returns **no** token — one from a partial read would not cover
+  the unfetched rows and would silently skip them on the next sync. An expired
+  token (`410 Gone`) surfaces as an instruction to re-sync, not a generic error.
+
+  **The baseline sync is expensive.** Establishing a token means enumerating the
+  whole folder: a live run returned 4,912 changes for this Inbox and took several
+  minutes. Every *subsequent* sync is cheap — resuming with the token returned 0
+  changes immediately — but the first call is not something to do per request.
+  On the folders this matters most for (Deleted Items ~24k, Archive ~19.8k) plan
+  for a slow first pass and persist the token.
+
+  Untested: the `410 Gone` path. A malformed token returns `400 Badly formed
+  token`, and an expired one could not be manufactured on demand, so the re-sync
+  message is covered by unit tests but has not been seen against live Graph.
+
+- **`GRAPH_IMMUTABLE_IDS`** (#14). Requests `Prefer: IdType="ImmutableId"`, so a
+  message id survives folder moves. All-or-nothing per client, never per call —
+  mixing id types in a session is how an id resolved under one regime reaches a
+  call using the other. Flipping it invalidates any id already persisted.
+
+  The setting lives in `_headers()`, not in a per-call branch, specifically so it
+  rides `paginate`'s continuation requests — which re-enter `request` with a full
+  URL and no params. Keyed off params, page 1 and page 2 would return different
+  id types.
+
+### Fixed
+
+- **`Prefer` was assigned rather than appended.** It is a comma-separated list,
+  so adding `IdType` naively would have dropped
+  `outlook.body-content-type="text"` on exactly the calls that fetch a body —
+  silently, since the response is still valid, just HTML. `GraphClient.request`
+  now takes an optional `headers` argument merged over the defaults, with
+  `Prefer` combined via `_merge_prefer`.
+
 ## 0.7.0
 
 ### Fixed

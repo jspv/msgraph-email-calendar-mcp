@@ -59,6 +59,24 @@ def close_http_client() -> None:
 atexit.register(close_http_client)
 
 
+def _merge_prefer(headers: dict[str, str], value: str) -> None:
+    """Append to ``Prefer`` instead of overwriting it.
+
+    ``Prefer`` is a comma-separated list. Assigning over it is how
+    ``IdType="ImmutableId"`` would silently drop
+    ``outlook.body-content-type="text"`` on exactly the calls that fetch a body
+    -- the response is still valid, just HTML.
+    """
+    existing = headers.get("Prefer")
+    if not existing:
+        headers["Prefer"] = value
+        return
+    parts = [p.strip() for p in existing.split(",") if p.strip()]
+    if value not in parts:
+        parts.append(value)
+    headers["Prefer"] = ", ".join(parts)
+
+
 def validate_path_segment(value: str, label: str = "id") -> str:
     """Ensure *value* is safe for interpolation into a Graph API URL path.
 
@@ -87,10 +105,17 @@ class GraphClient:
         if not token:
             # Fall back to MSAL (local/standalone mode)
             token = get_access_token(self.account_id)
-        return {
+        headers = {
             "Authorization": f"Bearer {token}",
             "Accept": "application/json",
         }
+        if settings.immutable_ids:
+            # Set here rather than per-call so it also rides on `paginate`'s
+            # continuation requests, which re-enter `request` with a full URL and
+            # no params. Anything keyed off params would apply to page 1 only,
+            # and page 2 would come back with the other id type.
+            headers["Prefer"] = 'IdType="ImmutableId"'
+        return headers
 
     def _normalize_path(self, path: str) -> str:
         """Convert *path* to a relative path suitable for ``graph_base_url``.
@@ -121,18 +146,25 @@ class GraphClient:
         *,
         params: dict[str, Any] | None = None,
         json_body: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
     ) -> dict[str, Any] | None:
         """Execute a single Graph API request with retry/backoff.
 
         Returns the parsed JSON response, or ``None`` for empty bodies
         (e.g. successful DELETE).  Raises ``GraphRequestError`` on failure.
         """
-        headers = self._headers()
+        request_headers = self._headers()
         if params and "$search" in params:
-            headers["ConsistencyLevel"] = "eventual"
-            headers["Prefer"] = 'outlook.body-content-type="text"'
+            request_headers["ConsistencyLevel"] = "eventual"
+            _merge_prefer(request_headers, 'outlook.body-content-type="text"')
         elif params and "body" in str(params.get("$select", "")):
-            headers["Prefer"] = 'outlook.body-content-type="text"'
+            _merge_prefer(request_headers, 'outlook.body-content-type="text"')
+        for key, value in (headers or {}).items():
+            if key.lower() == "prefer":
+                _merge_prefer(request_headers, value)
+            else:
+                request_headers[key] = value
+        headers = request_headers
 
         normalized_path = self._normalize_path(path)
         client = _http_client()
@@ -179,6 +211,38 @@ class GraphClient:
                     continue
                 raise GraphRequestError("Network error while calling Microsoft Graph") from exc
         raise GraphRequestError("Microsoft Graph request failed after retries")
+
+    def paginate_delta(
+        self,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+        limit: int | None = None,
+    ) -> tuple[list[dict[str, Any]], str | None]:
+        """Walk a delta collection, returning its rows and the delta token.
+
+        ``paginate`` discards ``@odata.deltaLink``, which is the only part of a
+        delta response worth keeping -- it is the cursor for the next sync.
+
+        Returns ``(rows, delta_link)``. The token is ``None`` when *limit* cut
+        the walk short: a token from a partial read would not cover the rows
+        that were never fetched, so handing one back would silently skip them
+        on the following sync.
+        """
+        rows: list[dict[str, Any]] = []
+        next_url: str | None = None
+        while True:
+            payload = (
+                self.request("GET", next_url)
+                if next_url
+                else self.request("GET", path, params=params)
+            ) or {}
+            rows.extend(payload.get("value", []))
+            if limit is not None and len(rows) >= limit:
+                return rows[:limit], None
+            next_url = payload.get("@odata.nextLink")
+            if not next_url:
+                return rows, payload.get("@odata.deltaLink")
 
     def paginate(
         self,

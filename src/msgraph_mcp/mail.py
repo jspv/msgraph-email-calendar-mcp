@@ -883,6 +883,83 @@ def bulk_manage_messages_multi_pass(
     return report
 
 
+def sync_messages(
+    account_id: str | None = None,
+    *,
+    folder: str = "inbox",
+    delta_token: str | None = None,
+    limit: int | None = None,
+) -> dict[str, object]:
+    """Return what *changed* in a folder since *delta_token*, and a new token.
+
+    A date window answers "what arrived since X". It cannot answer "what
+    changed": ``receivedDateTime`` never moves after delivery, so a message read,
+    flagged, categorised or moved yesterday still carries last month's date and
+    no arrival-ordered scan will surface it. Deletions are worse -- a message
+    that leaves the folder simply stops appearing, indistinguishable from one
+    outside the window.
+
+    Delta reports both. Each change carries ``removed``: ``True`` entries are
+    ids that left the folder and have no other fields, so a caller can act on a
+    disappearance rather than infer it from an absence.
+
+    Call once without *delta_token* to establish a baseline, then pass the
+    returned token each time. Tokens expire; Graph answers ``410 Gone``, which
+    surfaces here as an instruction to re-sync from scratch rather than as a
+    generic request failure.
+
+    Note that delta is per-folder, so a move appears as a removal in one folder
+    and an addition in another -- and the addition carries a *different* ``id``.
+    Key on ``internet_message_id`` to join the two.
+    """
+    client = GraphClient(account_id)
+    folder_id = FOLDERS.get(folder.lower(), folder)
+    validate_path_segment(folder_id, "folder")
+
+    if delta_token:
+        # The token is a full URL carrying $deltatoken; it already encodes the
+        # folder and the original $select, which cannot be changed mid-token.
+        path, params = delta_token, None
+    else:
+        path = f"/me/mailFolders/{folder_id}/messages/delta"
+        params = {"$select": ",".join(_SUMMARY_SELECT)}
+
+    try:
+        rows, new_token = client.paginate_delta(path, params=params, limit=limit)
+    except GraphRequestError as exc:
+        if exc.status_code == 410:
+            raise GraphRequestError(
+                "The delta token has expired; re-sync from scratch by calling "
+                "sync_messages again with no delta_token.",
+                status_code=410,
+            ) from exc
+        raise
+
+    changes: list[dict[str, object]] = []
+    for row in rows:
+        removed = row.get("@removed")
+        if removed is not None:
+            changes.append(
+                {
+                    "id": row.get("id"),
+                    "removed": True,
+                    "reason": (removed or {}).get("reason"),
+                }
+            )
+            continue
+        summary = _message_summary(row).model_dump()
+        summary["removed"] = False
+        changes.append(summary)
+
+    return {
+        "ok": True,
+        "folder": folder,
+        "changes": changes,
+        "delta_token": new_token,
+        "truncated": new_token is None,
+    }
+
+
 def create_draft(
     account_id: str | None = None,
     *,
