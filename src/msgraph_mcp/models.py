@@ -217,6 +217,11 @@ class CalendarEventSummary(BaseModel):
     """List-level view of a calendar event."""
     id: str
     subject: str | None = None
+    #: ``singleInstance`` | ``occurrence`` | ``exception`` | ``seriesMaster``.
+    #: Without it a repeat is indistinguishable from a one-off at list level.
+    type: str | None = None
+    #: Set on an occurrence/exception; the id to edit or cancel the whole series.
+    series_master_id: str | None = None
     start: dict[str, Any] | None = None
     end: dict[str, Any] | None = None
     location: str | None = None
@@ -231,6 +236,9 @@ class CalendarEventDetail(BaseModel):
     """Full view of a single calendar event including body and attendees."""
     id: str
     subject: str | None = None
+    type: str | None = None
+    series_master_id: str | None = None
+    recurrence: dict[str, Any] | None = None
     start: dict[str, Any] | None = None
     end: dict[str, Any] | None = None
     is_all_day: bool = False
