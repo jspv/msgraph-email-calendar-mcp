@@ -123,6 +123,38 @@ def _graph_datetime(
 
 
 
+def _graph_instant(value: str, label: str, timezone_name: str | None = None) -> str:
+    """Resolve a caller time to an unambiguous UTC instant for a ``$filter``.
+
+    The write paths hand Graph a wall-clock string *plus* a zone name, which is
+    what preserves intent across DST. A ``$filter`` has no such pairing -- it
+    compares instants -- so an offsetless value must be resolved through its
+    zone here rather than passed along.
+
+    Same refusal as ``_graph_datetime``: with no offset and no zone the intended
+    time is unknown, and guessing UTC silently shifts the whole query window by
+    the caller's offset. Reads were left out when #9 fixed the writes, so the
+    same string was refused by ``create_event`` and quietly accepted here.
+    """
+    parsed = _parse_naive_or_aware(value, label)
+    if parsed.tzinfo is not None:
+        return parsed.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    zone = timezone_name or config.settings.default_timezone
+    if not zone:
+        raise ValueError(
+            f"{label} has no UTC offset and no timezone was given, so the "
+            f"intended time is ambiguous. Pass timezone=\"America/New_York\", "
+            f"include an offset (e.g. {value}-04:00), or set "
+            f"MSGRAPH_DEFAULT_TIMEZONE on the server."
+        )
+    _validate_timezone(zone, label)
+    return (
+        parsed.replace(tzinfo=ZoneInfo(zone))
+        .astimezone(timezone.utc)
+        .strftime("%Y-%m-%dT%H:%M:%SZ")
+    )
+
+
 def _attendees_phrase(count: int) -> str:
     """``"1 attendee"`` / ``"3 attendees"`` -- these strings are read by humans."""
     return f"{count} attendee" if count == 1 else f"{count} attendees"
@@ -197,11 +229,19 @@ def list_events(
     calendar_id: str | None = None,
     limit: int = 25,
     user_id: str | None = None,
+    timezone: str | None = None,
 ) -> list[CalendarEventSummary]:
-    """List events in a time range.  Pass *user_id* for shared calendars."""
+    """List events in a time range.  Pass *user_id* for shared calendars.
+
+    *start_iso* / *end_iso* follow the same rule as the write paths: an
+    offsetless value needs *timezone* or ``MSGRAPH_DEFAULT_TIMEZONE``, or the
+    call is refused rather than silently shifting the window.
+    """
     client = GraphClient(account_id)
     base = _base_path(user_id)
     start_iso, end_iso = _resolve_time_window(start_iso, end_iso)
+    start_iso = _graph_instant(start_iso, "start_iso", timezone)
+    end_iso = _graph_instant(end_iso, "end_iso", timezone)
 
     if calendar_id:
         validate_path_segment(calendar_id, "calendar_id")

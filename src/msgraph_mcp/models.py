@@ -39,12 +39,21 @@ def _safe_parse_datetime(value: str | None) -> datetime | None:
         return None
 
 
-def _format_datetime_label(value: str | None) -> str | None:
-    """Format an ISO-8601 string as ``YYYY-MM-DD HH:MM TZ``."""
+def _format_datetime_label(value: str | None, timezone_label: str | None = None) -> str | None:
+    """Format an ISO-8601 string as ``YYYY-MM-DD HH:MM TZ``.
+
+    ``%Z`` is empty for a naive datetime, which previously left a trailing space
+    and -- worse -- never named the zone. Graph's ``dateTimeTimeZone`` carries
+    the zone *beside* the naive string, so callers that have it pass it in;
+    since 0.3.0 those times are no longer reliably UTC, so an unlabelled one is
+    genuinely ambiguous rather than merely untidy.
+    """
     parsed = _safe_parse_datetime(value)
     if not parsed:
         return value
-    return parsed.strftime("%Y-%m-%d %H:%M %Z")
+    stamp = parsed.strftime("%Y-%m-%d %H:%M")
+    zone = parsed.strftime("%Z") or (timezone_label or "")
+    return f"{stamp} {zone}".strip()
 
 
 def _clean_text_snippet(value: str | None, max_len: int = 240) -> str | None:
@@ -102,8 +111,8 @@ def _event_time_label(start: dict[str, Any] | None, end: dict[str, Any] | None, 
     """Build a human-readable time range label for a calendar event."""
     start_value = (start or {}).get("dateTime")
     end_value = (end or {}).get("dateTime")
-    start_label = _format_datetime_label(start_value)
-    end_label = _format_datetime_label(end_value)
+    start_label = _format_datetime_label(start_value, (start or {}).get("timeZone"))
+    end_label = _format_datetime_label(end_value, (end or {}).get("timeZone"))
     if is_all_day:
         if start_label and end_label:
             return f"All day ({start_label} → {end_label})"
@@ -139,6 +148,11 @@ class MailMessageSummary(BaseModel):
     directly or merely copied.
     """
     id: str
+    #: RFC 5322 Message-ID. Unlike ``id``, this survives a folder move -- Graph
+    #: remints ``id`` on every move, and a round trip does not restore the
+    #: original -- so it is the only key a caller can persist across the very
+    #: operations this server exists to perform.
+    internet_message_id: str | None = None
     subject: str | None = None
     sender_name: str | None = None
     sender_email: str | None = None
@@ -166,6 +180,8 @@ class MailMessageSummary(BaseModel):
 class MailMessageDetail(BaseModel):
     """Full view of a single mail message including body content."""
     id: str
+    #: RFC 5322 Message-ID; stable across folder moves, unlike ``id``.
+    internet_message_id: str | None = None
     subject: str | None = None
     sender: dict[str, Any] | None = None
     sender_label: str | None = None

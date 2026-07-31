@@ -103,6 +103,7 @@ _VALID_FLAG_STATUSES = {"flagged", "complete", "notFlagged"}
 #: the answer is a leaner projection (addresses only), not dropping them.
 _SUMMARY_SELECT = (
     "id",
+    "internetMessageId",
     "subject",
     "from",
     "toRecipients",
@@ -203,6 +204,7 @@ def _message_summary(item: dict) -> MailMessageSummary:
         summary_parts.append(body_preview_clean)
     return MailMessageSummary(
         id=item["id"],
+        internet_message_id=item.get("internetMessageId"),
         subject=item.get("subject"),
         sender_name=sender_name,
         sender_email=sender_email,
@@ -304,7 +306,7 @@ def get_message(account_id: str | None, message_id: str) -> MailMessageDetail:
         "GET",
         f"/me/messages/{message_id}",
         params={
-            "$select": "id,subject,from,toRecipients,ccRecipients,receivedDateTime,isRead,hasAttachments,importance,flag,categories,bodyPreview,body",
+            "$select": "id,internetMessageId,subject,from,toRecipients,ccRecipients,receivedDateTime,isRead,hasAttachments,importance,flag,categories,bodyPreview,body",
         },
     ) or {}
     sender = item.get("from")
@@ -326,6 +328,7 @@ def get_message(account_id: str | None, message_id: str) -> MailMessageDetail:
         summary_parts.append(body_preview_clean)
     return MailMessageDetail(
         id=item["id"],
+        internet_message_id=item.get("internetMessageId"),
         subject=item.get("subject"),
         sender=sender,
         sender_label=sender_label,

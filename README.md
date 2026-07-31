@@ -58,7 +58,7 @@ A [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) server that g
 | Mail | `create_folder` | Create a new mail folder |
 | Mail | `list_aliases` | List email aliases / send-from addresses |
 | Calendar | `list_calendars` | List calendars (own or shared via `user_id`) |
-| Calendar | `list_events` | List events in a time range (limit 100) |
+| Calendar | `list_events` | List events in a time range (limit 100; needs a `timezone` for offsetless times) |
 | Calendar | `get_event` | Full event details with attendees |
 | Calendar | `create_event` | Create a calendar event (dry-run by default; needs a `timezone` for offsetless times) |
 | Calendar | `update_event` | Update an existing event (dry-run by default; needs a `timezone` for offsetless times) |
@@ -296,6 +296,11 @@ Eastern meeting silently becomes 10:00 EDT, with invitations already sent — an
 on an MCP server the caller is usually a model turning "book me 2pm Thursday"
 into exactly that string. Set `MSGRAPH_DEFAULT_TIMEZONE` if you want a
 server-side default instead of passing `timezone` per call.
+
+The same rule applies to **reads** — `list_events` refuses an offsetless window
+rather than shifting it silently by your offset. One difference: a `$filter`
+compares instants, so an offsetless read time is *resolved through* its zone to
+UTC, whereas a write hands Graph the wall-clock time plus the zone name.
 
 **All-day events** are a separate contract: Graph wants midnight in the stated
 zone, so the calendar *date* is preserved and the instant is not.
