@@ -1203,6 +1203,21 @@ def categorize_message(
     return {"ok": True, "message_id": message_id, "categories": categories}
 
 
+def set_message_importance(
+    account_id: str | None = None,
+    *,
+    message_id: str,
+    importance: str,
+) -> dict:
+    """Set Outlook importance on a message.  Values: low, normal, high."""
+    if importance not in ("low", "normal", "high"):
+        raise ValueError("importance must be one of ('low', 'normal', 'high')")
+    validate_path_segment(message_id, "message_id")
+    client = GraphClient(account_id)
+    client.request("PATCH", f"/me/messages/{message_id}", json_body={"importance": importance})
+    return {"ok": True, "message_id": message_id, "importance": importance}
+
+
 def list_aliases(account_id: str | None = None) -> dict:
     """List email aliases available for the authenticated user.
 
