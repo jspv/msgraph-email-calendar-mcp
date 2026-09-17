@@ -199,9 +199,10 @@ def update_message(
     is_read: bool | None = None,
     flag_status: str | None = None,
     categories: list[str] | None = None,
+    importance: str | None = None,
     account_id: str | None = None,
 ) -> dict:
-    """Update message properties: read/unread, follow-up flag (flagged/complete/notFlagged), or color categories."""
+    """Update message properties: read/unread, follow-up flag (flagged/complete/notFlagged), color categories, or importance (low/normal/high)."""
     results: dict = {"ok": True, "message_id": message_id, "updated": []}
     if is_read is not None:
         mail.mark_message_read(account_id, message_id, is_read)
@@ -215,6 +216,12 @@ def update_message(
         mail.categorize_message(account_id, message_id=message_id, categories=categories)
         results["updated"].append("categories")
         results["categories"] = categories
+    if importance is not None:
+        mail.set_message_importance(
+            account_id, message_id=message_id, importance=importance
+        )
+        results["updated"].append("importance")
+        results["importance"] = importance
     return results
 
 

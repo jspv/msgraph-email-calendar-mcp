@@ -7,6 +7,7 @@ from msgraph_mcp.mail import (
     list_child_folders,
     flag_message,
     categorize_message,
+    set_message_importance,
     list_aliases,
 )
 
@@ -92,6 +93,26 @@ class TestCategorizeMessage:
         assert result["ok"] is True
         body = client.request.call_args[1]["json_body"]
         assert body == {"categories": ["Red category", "Blue category"]}
+
+
+class TestSetMessageImportance:
+    @patch("msgraph_mcp.mail.GraphClient")
+    def test_set_importance(self, MockClient):
+        client = MockClient.return_value
+        client.request.return_value = None
+        result = set_message_importance(
+            account_id=None, message_id="msg-1", importance="high"
+        )
+        assert result["ok"] is True
+        body = client.request.call_args[1]["json_body"]
+        assert body == {"importance": "high"}
+
+    def test_rejects_invalid_importance(self):
+        import pytest
+        with pytest.raises(ValueError, match="importance"):
+            set_message_importance(
+                account_id=None, message_id="msg-1", importance="urgent"
+            )
 
 
 class TestListAliases:
